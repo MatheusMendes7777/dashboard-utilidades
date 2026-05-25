@@ -1,240 +1,690 @@
+# dashboard_app.py
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+from datetime import datetime
+import os
 
-# =====================================================
-# CONFIGURAÇÃO DA PÁGINA
-# =====================================================
-st.set_page_config(
-    page_title="Calculadora de Torre de Resfriamento",
-    layout="wide"
-)
+# Configuração da página
+st.set_page_config(page_title="Dashboard de Utilidades", layout="wide")
 
-# =====================================================
-# FUNÇÃO DE FORMATAÇÃO NUMÉRICA (PT-BR)
-# =====================================================
-def formatar_numero(valor, casas_decimais=2):
+# Dicionário de unidades de medida comuns
+UNIDADES_MEDIDA = {
+    # Temperatura
+    'temperatura': '°C',
+    'temp': '°C',
+    'temp_agua': '°C',
+    'temp_ar': '°C',
+    
+    # Pressão
+    'pressao': 'bar',
+    'pressão': 'bar',
+    'pressao_oleo': 'bar',
+    'pressao_vapor': 'bar',
+    
+    # Vazão
+    'vazao': 'm³/h',
+    'vazão': 'm³/h',
+    'fluxo': 'm³/h',
+    'flow': 'm³/h',
+    
+    # Energia
+    'energia': 'kWh',
+    'potencia': 'kW',
+    'potência': 'kW',
+    'consumo': 'kWh',
+    
+    # Nível
+    'nivel': '%',
+    'nível': '%',
+    'level': '%',
+    
+    # Velocidade
+    'velocidade': 'rpm',
+    'rpm': 'rpm',
+    
+    # Concentração
+    'concentracao': '%',
+    'concentração': '%',
+    'ph': 'pH',
+    'condutividade': 'µS/cm',
+    
+    # Outros
+    'vibracao': 'mm/s',
+    'vibração': 'mm/s',
+    'ruido': 'dB',
+    'ruído': 'dB',
+    'corrente': 'A',
+    'tensao': 'V',
+    'tensão': 'V',
+    'frequencia': 'Hz',
+    'frequência': 'Hz'
+}
+
+def obter_unidade_medida(coluna_nome):
+    """Obtém a unidade de medida apropriada baseada no nome da coluna"""
+    coluna_lower = coluna_nome.lower()
+    
+    # Verificar correspondências exatas ou parciais
+    for chave, unidade in UNIDADES_MEDIDA.items():
+        if chave in coluna_lower:
+            return unidade
+    
+    return ""  # Retorna vazio se não encontrar correspondência
+
+def formatar_com_unidade(valor, unidade, decimais=2):
+    """Formata um valor com sua unidade de medida"""
+    if pd.isna(valor) or valor is None:
+        return "N/A"
+    
     try:
-        if valor is None or pd.isna(valor):
-            return "0,00"
-
-        formato = f"{{:,.{casas_decimais}f}}"
-        numero = formato.format(float(valor))
-        numero = numero.replace(",", "X").replace(".", ",").replace("X", ".")
-        return numero
+        if isinstance(valor, (int, float)):
+            return f"{valor:.{decimais}f} {unidade}".strip()
+        return f"{valor} {unidade}".strip()
     except:
         return str(valor)
 
-# =====================================================
-# CSS GLOBAL – LIMPEZA TOTAL DE ESPAÇOS
-# =====================================================
-st.markdown("""
-<style>
+# Função para carregar dados
+@st.cache_data
+def carregar_dados(uploaded_file):
+    """Carrega os dados do arquivo Excel com cache para melhor performance"""
+    try:
+        dados = pd.read_excel(uploaded_file)
+        return dados
+    except Exception as e:
+        st.error(f"Erro ao carregar arquivo: {str(e)}")
+        return None
 
-/* ===============================
-   RESET DE ESPAÇAMENTO STREAMLIT
-   =============================== */
-.main .block-container {
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-}
+# Função para converter para data
+def converter_para_data(coluna):
+    """Tenta converter uma coluna para datetime"""
+    try:
+        return pd.to_datetime(coluna, dayfirst=True, errors='coerce')
+    except:
+        return coluna
 
-.stMarkdown,
-.stMarkdown > div,
-.stVerticalBlock,
-div[data-testid="stVerticalBlock"] {
-    margin: 0 !important;
-    padding: 0 !important;
-}
+# Função para detectar outliers
+def detectar_outliers(dados, coluna):
+    Q1 = dados[coluna].quantile(0.25)
+    Q3 = dados[coluna].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    return dados[(dados[coluna] < lower_bound) | (dados[coluna] > upper_bound)]
 
-hr {
-    display: none !important;
-}
+# Função para remover outliers recursivamente
+def remover_outliers_recursivamente(dados, coluna, max_iteracoes=5):
+    """Remove outliers recursivamente até não haver mais outliers"""
+    dados_temp = dados.copy()
+    total_removidos = 0
+    
+    for i in range(max_iteracoes):
+        outliers = detectar_outliers(dados_temp, coluna)
+        if len(outliers) == 0:
+            break
+        
+        dados_temp = dados_temp[~dados_temp.index.isin(outliers.index)]
+        total_removidos += len(outliers)
+    
+    return dados_temp, total_removidos
 
-/* ===============================
-   DIVISOR CONTROLADO
-   =============================== */
-.divider {
-    height: 1px;
-    background-color: #e0e0e0;
-    margin: 14px 0;
-}
+# Função para calcular regressão linear manualmente
+def calcular_regressao_linear(x, y):
+    """Calcula regressão linear manualmente"""
+    # Remover valores NaN
+    mask = ~np.isnan(x) & ~np.isnan(y)
+    x_clean = x[mask]
+    y_clean = y[mask]
+    
+    if len(x_clean) < 2:
+        return None, None, None
+    
+    n = len(x_clean)
+    x_mean = np.mean(x_clean)
+    y_mean = np.mean(y_clean)
+    
+    numerator = np.sum((x_clean - x_mean) * (y_clean - y_mean))
+    denominator = np.sum((x_clean - x_mean) ** 2)
+    
+    if denominator == 0:
+        return None, None, None
+    
+    slope = numerator / denominator
+    intercept = y_mean - slope * x_mean
+    
+    # Calcular R²
+    y_pred = slope * x_clean + intercept
+    ss_res = np.sum((y_clean - y_pred) ** 2)
+    ss_tot = np.sum((y_clean - y_mean) ** 2)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    
+    return slope, intercept, r_squared
 
-/* ===============================
-   TÍTULOS
-   =============================== */
-h1, h2 {
-    margin: 10px 0 !important;
-}
+# Função para criar gráfico Q-Q simplificado
+def criar_qq_plot(data):
+    """Cria gráfico Q-Q simplificado"""
+    data_clean = data.dropna()
+    if len(data_clean) < 2:
+        return go.Figure()
+    
+    # Calcular quantis
+    n = len(data_clean)
+    theoretical_quantiles = np.sort(np.random.normal(0, 1, n))  # Quantis teóricos aproximados
+    sample_quantiles = np.sort(data_clean)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=theoretical_quantiles,
+        y=sample_quantiles,
+        mode='markers',
+        name='Dados',
+        marker=dict(color='blue', size=6)
+    ))
+    
+    # Adicionar linha de referência
+    max_val = max(theoretical_quantiles.max(), sample_quantiles.max())
+    min_val = min(theoretical_quantiles.min(), sample_quantiles.min())
+    fig.add_trace(go.Scatter(
+        x=[min_val, max_val],
+        y=[min_val, max_val],
+        mode='lines',
+        name='Linha de Referência',
+        line=dict(color='red', dash='dash', width=2)
+    ))
+    
+    fig.update_layout(
+        title="Gráfico Q-Q (Normalidade)",
+        xaxis_title="Quantis Teóricos",
+        yaxis_title="Quantis Amostrais",
+        plot_bgcolor='white',
+        paper_bgcolor='white'
+    )
+    
+    # Remover grids que podem causar barras brancas
+    fig.update_xaxis(showgrid=False, gridcolor='lightgray')
+    fig.update_yaxis(showgrid=False, gridcolor='lightgray')
+    
+    return fig
 
-/* ===============================
-   CARDS
-   =============================== */
-.card {
-    background-color: white;
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-    box-shadow: 0 3px 8px rgba(0,0,0,0.08);
-}
+def main():
+    st.title("📊 Dashboard de Utilidades - Análise Completa")
+    
+    # Sidebar para upload
+    with st.sidebar:
+        st.header("📁 Carregamento de Dados")
+        
+        uploaded_file = st.file_uploader(
+            "Selecione o arquivo Excel:",
+            type=['xlsx', 'xls']
+        )
+        
+        if uploaded_file is not None:
+            st.success("✅ Arquivo selecionado!")
+        else:
+            st.info("📝 Aguardando upload do arquivo...")
+            st.stop()
 
-.card-title {
-    font-size: 20px;
-    font-weight: bold;
-    margin-bottom: 12px;
-    border-bottom: 2px solid #4CAF50;
-    padding-bottom: 6px;
-    color: #2c3e50;
-}
+    # Carregar dados
+    dados = carregar_dados(uploaded_file)
+    
+    if dados is None:
+        st.error("❌ Falha ao carregar os dados.")
+        st.stop()
 
-/* ===============================
-   TABELAS
-   =============================== */
-.table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 15px;
-}
+    # Processar dados
+    dados_processados = dados.copy()
+    colunas_numericas = dados_processados.select_dtypes(include=[np.number]).columns.tolist()
+    
+    # Detectar colunas de data
+    colunas_data = []
+    for col in dados_processados.columns:
+        if any(palavra in col.lower() for palavra in ['data', 'date', 'dia', 'time']):
+            colunas_data.append(col)
+            dados_processados[col] = converter_para_data(dados_processados[col])
 
-.table th {
-    background-color: #2c3e50;
-    color: white;
-    padding: 10px;
-    text-align: left;
-}
+    # Sidebar para filtros globais
+    with st.sidebar:
+        st.header("🎛️ Filtros Globais")
+        
+        # Filtro de período com botão (x) para limpar
+        if colunas_data:
+            coluna_data_filtro = st.selectbox("Coluna de data para filtro:", colunas_data)
+            if pd.api.types.is_datetime64_any_dtype(dados_processados[coluna_data_filtro]):
+                min_date = dados_processados[coluna_data_filtro].min()
+                max_date = dados_processados[coluna_data_filtro].max()
+                
+                # Mostrar filtro atual e botão para limpar
+                col_filtro1, col_filtro2 = st.columns([3, 1])
+                with col_filtro1:
+                    st.write("**Período selecionado:**")
+                    if 'start_date' in st.session_state and 'end_date' in st.session_state:
+                        st.info(f"📅 {st.session_state.start_date.date()} até {st.session_state.end_date.date()}")
+                    else:
+                        st.info("📅 Nenhum filtro aplicado")
+                
+                with col_filtro2:
+                    if st.button("✖️ Limpar filtro", key="limpar_filtro_data"):
+                        if 'start_date' in st.session_state:
+                            del st.session_state.start_date
+                            del st.session_state.end_date
+                        st.rerun()
+                
+                date_range = st.date_input(
+                    "Selecione o período:",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    key="date_range_filter"
+                )
+                
+                if len(date_range) == 2 and date_range != (min_date, max_date):
+                    start_date, end_date = date_range
+                    st.session_state.start_date = pd.Timestamp(start_date)
+                    st.session_state.end_date = pd.Timestamp(end_date)
+                    dados_processados = dados_processados[
+                        (dados_processados[coluna_data_filtro] >= st.session_state.start_date) &
+                        (dados_processados[coluna_data_filtro] <= st.session_state.end_date)
+                    ]
+        
+        # Filtro de outliers com remoção recursiva
+        st.subheader("🔍 Gerenciamento de Outliers")
+        remover_outliers = st.checkbox("Remover outliers automaticamente")
+        
+        if remover_outliers and colunas_numericas:
+            coluna_outliers = st.selectbox("Coluna para análise de outliers:", colunas_numericas)
+            if coluna_outliers:
+                # Detectar outliers inicialmente
+                outliers_inicial = detectar_outliers(dados_processados, coluna_outliers)
+                st.info(f"📊 {len(outliers_inicial)} outliers detectados inicialmente")
+                
+                if st.button("Remover outliers (recursivamente)"):
+                    dados_processados, total_removidos = remover_outliers_recursivamente(
+                        dados_processados, coluna_outliers, max_iteracoes=5
+                    )
+                    st.success(f"✅ {total_removidos} outliers removidos recursivamente!")
+                    # Verificar se novos outliers apareceram
+                    novos_outliers = detectar_outliers(dados_processados, coluna_outliers)
+                    if len(novos_outliers) > 0:
+                        st.warning(f"⚠️ Ainda restam {len(novos_outliers)} outliers. Execute novamente se necessário.")
+                    else:
+                        st.success("🎉 Nenhum outlier remanescente!")
 
-.table td {
-    padding: 10px;
-    border-bottom: 1px solid #e0e0e0;
-}
+    # Abas principais
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Análise de Séries Temporais", 
+        "📊 Estatística Detalhada", 
+        "🔥 Análise de Correlações", 
+        "🔍 Gráficos de Dispersão"
+    ])
 
-.value {
-    text-align: right;
-    font-weight: bold;
-}
+    with tab1:
+        st.header("📈 Análise de Séries Temporais")
+        
+        if colunas_data and colunas_numericas:
+            col1, col2, col3 = st.columns([2, 2, 1])
+            
+            with col1:
+                coluna_data = st.selectbox("Coluna de Data:", colunas_data, key="temp_data")
+            with col2:
+                coluna_valor = st.selectbox("Coluna para Análise:", colunas_numericas, key="temp_valor")
+            with col3:
+                tipo_grafico = st.selectbox("Tipo de Gráfico:", 
+                                           ["Linha", "Área", "Barra", "Scatter", "Boxplot Temporal"])
+            
+            if coluna_data and coluna_valor:
+                dados_temp = dados_processados.sort_values(by=coluna_data)
+                unidade = obter_unidade_medida(coluna_valor)
+                
+                # Criar gráfico baseado no tipo selecionado
+                if tipo_grafico == "Linha":
+                    fig = px.line(dados_temp, x=coluna_data, y=coluna_valor, 
+                                 title=f"Evolução Temporal de {coluna_valor} ({unidade})")
+                elif tipo_grafico == "Área":
+                    fig = px.area(dados_temp, x=coluna_data, y=coluna_valor,
+                                 title=f"Evolução Temporal de {coluna_valor} ({unidade})")
+                elif tipo_grafico == "Barra":
+                    fig = px.bar(dados_temp, x=coluna_data, y=coluna_valor,
+                                title=f"Evolução Temporal de {coluna_valor} ({unidade})")
+                elif tipo_grafico == "Scatter":
+                    fig = px.scatter(dados_temp, x=coluna_data, y=coluna_valor,
+                                    title=f"Relação Temporal de {coluna_valor} ({unidade})")
+                else:  # Boxplot Temporal
+                    # Criar períodos mensais para boxplot
+                    dados_temp['Periodo'] = dados_temp[coluna_data].dt.to_period('M').astype(str)
+                    fig = px.box(dados_temp, x='Periodo', y=coluna_valor,
+                                title=f"Distribuição Mensal de {coluna_valor} ({unidade})")
+                
+                # Remover grids e barras brancas
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white'
+                )
+                fig.update_xaxis(showgrid=False, gridcolor='lightgray')
+                fig.update_yaxis(showgrid=False, gridcolor='lightgray')
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Estatísticas temporais COMPLETAS com unidades
+                st.subheader("📊 Estatísticas Temporais Detalhadas")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Média", formatar_com_unidade(dados_temp[coluna_valor].mean(), unidade))
+                    st.metric("Mediana", formatar_com_unidade(dados_temp[coluna_valor].median(), unidade))
+                    moda_val = dados_temp[coluna_valor].mode().iloc[0] if not dados_temp[coluna_valor].mode().empty else None
+                    st.metric("Moda", formatar_com_unidade(moda_val, unidade) if moda_val else 'N/A')
+                
+                with col2:
+                    st.metric("Desvio Padrão", formatar_com_unidade(dados_temp[coluna_valor].std(), unidade))
+                    st.metric("Variância", formatar_com_unidade(dados_temp[coluna_valor].var(), unidade))
+                    cv = (dados_temp[coluna_valor].std()/dados_temp[coluna_valor].mean())*100 if dados_temp[coluna_valor].mean() != 0 else 0
+                    st.metric("Coef. Variação", f"{cv:.1f}%")
+                
+                with col3:
+                    st.metric("Mínimo", formatar_com_unidade(dados_temp[coluna_valor].min(), unidade))
+                    st.metric("Máximo", formatar_com_unidade(dados_temp[coluna_valor].max(), unidade))
+                    st.metric("Amplitude", formatar_com_unidade(dados_temp[coluna_valor].max() - dados_temp[coluna_valor].min(), unidade))
+                
+                with col4:
+                    Q1 = dados_temp[coluna_valor].quantile(0.25)
+                    Q3 = dados_temp[coluna_valor].quantile(0.75)
+                    st.metric("Q1 (25%)", formatar_com_unidade(Q1, unidade))
+                    st.metric("Q3 (75%)", formatar_com_unidade(Q3, unidade))
+                    st.metric("IQR", formatar_com_unidade(Q3 - Q1, unidade))
+                
+                # Análise de tendência
+                st.subheader("📈 Análise de Tendência")
+                if len(dados_temp) > 1:
+                    crescimento = ((dados_temp[coluna_valor].iloc[-1] - dados_temp[coluna_valor].iloc[0]) / dados_temp[coluna_valor].iloc[0] * 100) if dados_temp[coluna_valor].iloc[0] != 0 else 0
+                    
+                    col_t1, col_t2, col_t3 = st.columns(3)
+                    with col_t1:
+                        st.metric("Crescimento Total", f"{crescimento:.1f}%")
+                    with col_t2:
+                        # Tendência linear simples
+                        x = np.arange(len(dados_temp))
+                        y = dados_temp[coluna_valor].values
+                        coef = np.polyfit(x, y, 1)[0]
+                        tendencia = "↗️ Alta" if coef > 0 else "↘️ Baixa" if coef < 0 else "➡️ Estável"
+                        st.metric("Tendência", tendencia)
+                    with col_t3:
+                        st.metric("Taxa de Variação", formatar_com_unidade(coef, f"{unidade}/ponto"))
 
-/* ===============================
-   BALANÇO HÍDRICO
-   =============================== */
-.balance {
-    background-color: #e8f5e9;
-    border: 2px solid #4CAF50;
-    border-radius: 12px;
-    padding: 20px;
-    margin-top: 16px;
-    text-align: center;
-}
+    with tab2:
+        st.header("📊 Estatística Detalhada")
+        
+        if colunas_numericas:
+            coluna_analise = st.selectbox("Selecione a coluna para análise:", colunas_numericas, key="stats_col")
+            
+            if coluna_analise:
+                unidade = obter_unidade_medida(coluna_analise)
+                
+                # Estatísticas básicas
+                st.subheader("📋 Estatísticas Descritivas Completas")
+                stats_data = dados_processados[coluna_analise].describe()
+                
+                col1, col2, col3, col4 = st.columns(4)
+                metrics = [
+                    ("Média", stats_data['mean']),
+                    ("Mediana", stats_data['50%']),
+                    ("Moda", dados_processados[coluna_analise].mode().iloc[0] if not dados_processados[coluna_analise].mode().empty else np.nan),
+                    ("Desvio Padrão", stats_data['std']),
+                    ("Variância", stats_data['std']**2),
+                    ("Coef. Variação", (stats_data['std']/stats_data['mean'])*100 if stats_data['mean'] != 0 else 0),
+                    ("Mínimo", stats_data['min']),
+                    ("Máximo", stats_data['max']),
+                    ("Amplitude", stats_data['max'] - stats_data['min']),
+                    ("Q1 (25%)", stats_data['25%']),
+                    ("Q3 (75%)", stats_data['75%']),
+                    ("IQR", stats_data['75%'] - stats_data['25%'])
+                ]
+                
+                for i, (name, value) in enumerate(metrics):
+                    with [col1, col2, col3, col4][i % 4]:
+                        if not np.isnan(value):
+                            if name in ["Coef. Variação"]:
+                                st.metric(name, f"{value:.1f}%")
+                            else:
+                                st.metric(name, formatar_com_unidade(value, unidade if name not in ["Coef. Variação"] else ""))
+                
+                # Análise de distribuição COMPLETA
+                st.subheader("📈 Análise de Distribuição")
+                
+                dist_col1, dist_col2 = st.columns(2)
+                
+                with dist_col1:
+                    # Coeficientes de forma
+                    skewness = dados_processados[coluna_analise].skew()
+                    kurtosis = dados_processados[coluna_analise].kurtosis()
+                    
+                    st.write("**📊 Medidas de Forma:**")
+                    st.metric("Assimetria", f"{skewness:.3f}")
+                    st.metric("Curtose", f"{kurtosis:.3f}")
+                    
+                    # Interpretação
+                    st.write("**📝 Interpretação:**")
+                    if abs(skewness) < 0.5:
+                        st.success("• Distribuição aproximadamente simétrica")
+                    elif abs(skewness) < 1:
+                        st.warning("• Distribuição moderadamente assimétrica")
+                    else:
+                        st.error("• Distribuição fortemente assimétrica")
+                    
+                    if abs(kurtosis) < 0.5:
+                        st.success("• Curtose próxima da normal")
+                    elif abs(kurtosis) < 1:
+                        st.warning("• Curtose moderadamente diferente da normal")
+                    else:
+                        st.error("• Curtose muito diferente da normal")
+                
+                with dist_col2:
+                    # Gráficos de distribuição
+                    fig = px.histogram(dados_processados, x=coluna_analise, 
+                                      title=f"Distribuição de {coluna_analise} ({unidade})",
+                                      nbins=30, marginal="box")
+                    fig.update_layout(
+                        plot_bgcolor='white',
+                        paper_bgcolor='white'
+                    )
+                    fig.update_xaxis(showgrid=False, gridcolor='lightgray')
+                    fig.update_yaxis(showgrid=False, gridcolor='lightgray')
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Gráfico Q-Q
+                st.subheader("📊 Gráfico Q-Q (Normalidade)")
+                fig_qq = criar_qq_plot(dados_processados[coluna_analise])
+                st.plotly_chart(fig_qq, use_container_width=True)
+                
+                # Análise de outliers
+                st.subheader("🔍 Análise de Outliers")
+                outliers = detectar_outliers(dados_processados, coluna_analise)
+                st.metric("Número de Outliers", len(outliers))
+                
+                if len(outliers) > 0:
+                    with st.expander("📋 Detalhes dos Outliers"):
+                        outliers_formatados = outliers[[coluna_analise]].copy()
+                        outliers_formatados[coluna_analise] = outliers_formatados[coluna_analise].apply(
+                            lambda x: formatar_com_unidade(x, unidade)
+                        )
+                        st.dataframe(outliers_formatados)
 
-.balance strong {
-    font-size: 18px;
-}
+    with tab3:
+        st.header("🔥 Análise de Correlações")
+        
+        if len(colunas_numericas) > 1:
+            # Selecionar variáveis para correlação
+            st.subheader("🎯 Seleção de Variáveis")
+            variaveis_selecionadas = st.multiselect(
+                "Selecione as variáveis para análise de correlação:",
+                options=colunas_numericas,
+                default=colunas_numericas[:min(8, len(colunas_numericas))],
+                key="corr_vars"
+            )
+            
+            if len(variaveis_selecionadas) > 1:
+                # Matriz de correlação
+                corr_matrix = dados_processados[variaveis_selecionadas].corr()
+                
+                fig = px.imshow(corr_matrix, 
+                               title="Matriz de Correlação",
+                               color_continuous_scale="RdBu_r",
+                               aspect="auto",
+                               text_auto=True)
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Top correlações DETALHADO
+                st.subheader("🔝 Top 10 Maiores e Menores Correlações")
+                
+                correlations = []
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i+1, len(corr_matrix.columns)):
+                        correlations.append({
+                            'Variável 1': corr_matrix.columns[i],
+                            'Variável 2': corr_matrix.columns[j],
+                            'Correlação': corr_matrix.iloc[i, j]
+                        })
+                
+                df_corr = pd.DataFrame(correlations)
+                df_corr['Abs_Correlation'] = df_corr['Correlação'].abs()
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**📈 10 Maiores Correlações:**")
+                    top_correlations = df_corr.nlargest(10, 'Abs_Correlation')
+                    for _, row in top_correlations.iterrows():
+                        corr_color = "🟢" if row['Correlação'] > 0 else "🔴"
+                        corr_strength = "Forte" if abs(row['Correlação']) > 0.7 else "Moderada" if abs(row['Correlação']) > 0.3 else "Fraca"
+                        st.write(f"{corr_color} **{row['Correlação']:.3f}** - {corr_strength}")
+                        st.write(f"   {row['Variável 1']} ↔ {row['Variável 2']}")
+                        st.write("---")
+                
+                with col2:
+                    st.write("**📉 10 Menores Correlações:**")
+                    bottom_correlations = df_corr.nsmallest(10, 'Abs_Correlation')
+                    for _, row in bottom_correlations.iterrows():
+                        corr_color = "🟢" if row['Correlação'] > 0 else "🔴"
+                        corr_strength = "Forte" if abs(row['Correlação']) > 0.7 else "Moderada" if abs(row['Correlação']) > 0.3 else "Fraca"
+                        st.write(f"{corr_color} **{row['Correlação']:.3f}** - {corr_strength}")
+                        st.write(f"   {row['Variável 1']} ↔ {row['Variável 2']}")
+                        st.write("---")
 
-</style>
-""", unsafe_allow_html=True)
+    with tab4:
+        st.header("🔍 Gráficos de Dispersão com Regressão")
+        
+        if len(colunas_numericas) >= 2:
+            col1, col2 = st.columns(2)
+            with col1:
+                eixo_x = st.selectbox("Eixo X:", colunas_numericas, key="scatter_x")
+            with col2:
+                eixo_y = st.selectbox("Eixo Y:", colunas_numericas, key="scatter_y")
+            
+            if eixo_x and eixo_y:
+                unidade_x = obter_unidade_medida(eixo_x)
+                unidade_y = obter_unidade_medida(eixo_y)
+                
+                # Gráfico de dispersão SEM trendline (que causa o erro)
+                fig = px.scatter(dados_processados, x=eixo_x, y=eixo_y, 
+                                title=f"{eixo_y} ({unidade_y}) vs {eixo_x} ({unidade_x})",
+                                trendline=None)  # Explicitamente removido
+                
+                # Calcular regressão linear manualmente
+                slope, intercept, r_squared = calcular_regressao_linear(
+                    dados_processados[eixo_x].values,
+                    dados_processados[eixo_y].values
+                )
+                
+                # Adicionar linha de regressão manualmente se possível
+                if slope is not None and intercept is not None:
+                    x_range = np.linspace(dados_processados[eixo_x].min(), dados_processados[eixo_x].max(), 100)
+                    y_pred = slope * x_range + intercept
+                    
+                    fig.add_trace(go.Scatter(
+                        x=x_range,
+                        y=y_pred,
+                        mode='lines',
+                        name='Linha de Regressão',
+                        line=dict(color='red', width=2)
+                    ))
+                    
+                    # Adicionar equação da reta
+                    equation = f"y = {slope:.2f}x + {intercept:.2f}"
+                    r2_text = f"R² = {r_squared:.3f}"
+                    
+                    fig.add_annotation(
+                        x=0.05, y=0.95,
+                        xref="paper", yref="paper",
+                        text=f"{equation}<br>{r2_text}",
+                        showarrow=False,
+                        bgcolor="white",
+                        bordercolor="black",
+                        borderwidth=1
+                    )
+                
+                # Remover grids e barras brancas
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white'
+                )
+                fig.update_xaxis(
+                    title=f"{eixo_x} ({unidade_x})",
+                    showgrid=False,
+                    gridcolor='lightgray'
+                )
+                fig.update_yaxis(
+                    title=f"{eixo_y} ({unidade_y})",
+                    showgrid=False,
+                    gridcolor='lightgray'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Estatísticas de correlação COMPLETAS
+                st.subheader("📊 Estatísticas de Correlação e Regressão")
+                
+                correlacao = dados_processados[eixo_x].corr(dados_processados[eixo_y])
+                
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                with col_stat1:
+                    st.metric("Coeficiente de Correlação", f"{correlacao:.3f}")
+                with col_stat2:
+                    if r_squared is not None:
+                        st.metric("Coeficiente de Determinação (R²)", f"{r_squared:.3f}")
+                with col_stat3:
+                    if slope is not None:
+                        st.metric("Inclinação da Reta", f"{slope:.3f}")
+                
+                # Interpretação detalhada
+                st.subheader("📝 Interpretação da Correlação")
+                
+                if abs(correlacao) > 0.7:
+                    st.success("**Correlação Forte**")
+                    st.write("• Relação muito significativa entre as variáveis")
+                    st.write("• Pode indicar causalidade ou forte dependência")
+                elif abs(correlacao) > 0.3:
+                    st.info("**Correlação Moderada**")
+                    st.write("• Relação moderadamente significativa")
+                    st.write("• Pode indicar tendência ou influência parcial")
+                else:
+                    st.warning("**Correlação Fraca**")
+                    st.write("• Relação fraca ou inexistente")
+                    st.write("• Variáveis praticamente independentes")
 
-# =====================================================
-# TÍTULO PRINCIPAL
-# =====================================================
-st.title("🏭 Calculadora de Torre de Resfriamento")
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    # Download dos dados processados
+    st.sidebar.header("💾 Exportar Dados")
+    csv = dados_processados.to_csv(index=False)
+    st.sidebar.download_button(
+        label="📥 Baixar dados processados",
+        data=csv,
+        file_name="dados_processados.csv",
+        mime="text/csv"
+    )
 
-# =====================================================
-# ESTADO
-# =====================================================
-if "calcular" not in st.session_state:
-    st.session_state.calcular = False
-
-# =====================================================
-# SIDEBAR – ENTRADAS
-# =====================================================
-with st.sidebar:
-    st.header("⚙️ Parâmetros de Entrada")
-
-    VZ_rec = st.number_input("Vazão de Recirculação (m³/h)", min_value=0.0, value=10000.0)
-    Vol_estatico = st.number_input("Volume Estático (m³)", min_value=0.0, value=50.0)
-    T_retorno = st.number_input("Temperatura de Retorno (°C)", min_value=0.0, value=35.0)
-    T_bacia = st.number_input("Temperatura da Bacia (°C)", min_value=0.0, value=30.0)
-    perc_arraste = st.number_input("% Arraste", min_value=0.0, value=0.05)
-    perc_utilizacao = st.number_input("% Utilização", min_value=0.0, max_value=100.0, value=100.0)
-    ciclos = st.number_input("Ciclos de Concentração", min_value=1.1, value=5.0)
-
-    if st.button("📊 CALCULAR", use_container_width=True):
-        st.session_state.calcular = True
-        st.rerun()
-
-# =====================================================
-# CÁLCULOS
-# =====================================================
-if st.session_state.calcular:
-
-    delta_T = T_retorno - T_bacia
-    evaporacao = VZ_rec * delta_T * (0.85 / 556) * (perc_utilizacao / 100)
-
-    perda_liquida = evaporacao / (ciclos - 1)
-    perda_arraste = (perc_arraste / 100) * VZ_rec
-    purga = max(perda_liquida - perda_arraste, 0)
-
-    reposicao = evaporacao + perda_liquida
-    HTI = 0.693 * (Vol_estatico / perda_liquida) if perda_liquida > 0 else 0
-
-    # =================================================
-    # RESULTADOS – DADOS DE ENTRADA
-    # =================================================
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">📥 Dados de Entrada</div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <table class="table">
-        <tr><td>Vazão de Recirculação</td><td class="value">{formatar_numero(VZ_rec)}</td></tr>
-        <tr><td>Volume Estático</td><td class="value">{formatar_numero(Vol_estatico)}</td></tr>
-        <tr><td>Temperatura de Retorno</td><td class="value">{formatar_numero(T_retorno)}</td></tr>
-        <tr><td>Temperatura da Bacia</td><td class="value">{formatar_numero(T_bacia)}</td></tr>
-        <tr><td>% Arraste</td><td class="value">{formatar_numero(perc_arraste)}</td></tr>
-        <tr><td>Ciclos</td><td class="value">{formatar_numero(ciclos)}</td></tr>
-    </table>
-    """, unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # =================================================
-    # RESULTADOS – CÁLCULO
-    # =================================================
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">📈 Resultados</div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <table class="table">
-        <tr><td>ΔT</td><td class="value">{formatar_numero(delta_T)}</td></tr>
-        <tr><td>Evaporação</td><td class="value">{formatar_numero(evaporacao)}</td></tr>
-        <tr><td>Perda Líquida</td><td class="value">{formatar_numero(perda_liquida)}</td></tr>
-        <tr><td>Arraste</td><td class="value">{formatar_numero(perda_arraste)}</td></tr>
-        <tr><td>Purga</td><td class="value">{formatar_numero(purga)}</td></tr>
-        <tr><td>Reposição</td><td class="value">{formatar_numero(reposicao)}</td></tr>
-        <tr><td>HTI (h)</td><td class="value">{formatar_numero(HTI)}</td></tr>
-    </table>
-    """, unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # =================================================
-    # BALANÇO HÍDRICO
-    # =================================================
-    st.markdown('<div class="balance">', unsafe_allow_html=True)
-    st.markdown(f"""
-        💨 Evaporação: <strong>{formatar_numero(evaporacao)} m³/h</strong><br>
-        💧 Perdas Totais: <strong>{formatar_numero(perda_liquida)} m³/h</strong><br><br>
-        🚰 <strong>Reposição Total: {formatar_numero(reposicao)} m³/h</strong>
-    """, unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.button("🔄 Novo Cálculo"):
-        st.session_state.calcular = False
-        st.rerun()
-
-# =====================================================
-# RODAPÉ
-# =====================================================
-st.markdown("""
-<div style="text-align:center; color:#777; font-size:13px; margin-top:20px;">
-🏭 Calculadora de Torre de Resfriamento • Layout limpo • Versão estável
-</div>
-""", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()
