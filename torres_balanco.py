@@ -1,690 +1,831 @@
-# dashboard_app.py
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
-from datetime import datetime
-import os
 
-# Configuração da página
-st.set_page_config(page_title="Dashboard de Utilidades", layout="wide")
+st.set_page_config(page_title="Calculadora de Torre de Resfriamento", layout="wide")
 
-# Dicionário de unidades de medida comuns
-UNIDADES_MEDIDA = {
-    # Temperatura
-    'temperatura': '°C',
-    'temp': '°C',
-    'temp_agua': '°C',
-    'temp_ar': '°C',
-    
-    # Pressão
-    'pressao': 'bar',
-    'pressão': 'bar',
-    'pressao_oleo': 'bar',
-    'pressao_vapor': 'bar',
-    
-    # Vazão
-    'vazao': 'm³/h',
-    'vazão': 'm³/h',
-    'fluxo': 'm³/h',
-    'flow': 'm³/h',
-    
-    # Energia
-    'energia': 'kWh',
-    'potencia': 'kW',
-    'potência': 'kW',
-    'consumo': 'kWh',
-    
-    # Nível
-    'nivel': '%',
-    'nível': '%',
-    'level': '%',
-    
-    # Velocidade
-    'velocidade': 'rpm',
-    'rpm': 'rpm',
-    
-    # Concentração
-    'concentracao': '%',
-    'concentração': '%',
-    'ph': 'pH',
-    'condutividade': 'µS/cm',
-    
-    # Outros
-    'vibracao': 'mm/s',
-    'vibração': 'mm/s',
-    'ruido': 'dB',
-    'ruído': 'dB',
-    'corrente': 'A',
-    'tensao': 'V',
-    'tensão': 'V',
-    'frequencia': 'Hz',
-    'frequência': 'Hz'
-}
-
-def obter_unidade_medida(coluna_nome):
-    """Obtém a unidade de medida apropriada baseada no nome da coluna"""
-    coluna_lower = coluna_nome.lower()
-    
-    # Verificar correspondências exatas ou parciais
-    for chave, unidade in UNIDADES_MEDIDA.items():
-        if chave in coluna_lower:
-            return unidade
-    
-    return ""  # Retorna vazio se não encontrar correspondência
-
-def formatar_com_unidade(valor, unidade, decimais=2):
-    """Formata um valor com sua unidade de medida"""
-    if pd.isna(valor) or valor is None:
-        return "N/A"
-    
+def formatar_numero(valor, casas_decimais=3):
+    """Formata número com vírgula como separador decimal e ponto como separador de milhar"""
     try:
-        if isinstance(valor, (int, float)):
-            return f"{valor:.{decimais}f} {unidade}".strip()
-        return f"{valor} {unidade}".strip()
-    except:
-        return str(valor)
-
-# Função para carregar dados
-@st.cache_data
-def carregar_dados(uploaded_file):
-    """Carrega os dados do arquivo Excel com cache para melhor performance"""
-    try:
-        dados = pd.read_excel(uploaded_file)
-        return dados
-    except Exception as e:
-        st.error(f"Erro ao carregar arquivo: {str(e)}")
-        return None
-
-# Função para converter para data
-def converter_para_data(coluna):
-    """Tenta converter uma coluna para datetime"""
-    try:
-        return pd.to_datetime(coluna, dayfirst=True, errors='coerce')
-    except:
-        return coluna
-
-# Função para detectar outliers
-def detectar_outliers(dados, coluna):
-    Q1 = dados[coluna].quantile(0.25)
-    Q3 = dados[coluna].quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    return dados[(dados[coluna] < lower_bound) | (dados[coluna] > upper_bound)]
-
-# Função para remover outliers recursivamente
-def remover_outliers_recursivamente(dados, coluna, max_iteracoes=5):
-    """Remove outliers recursivamente até não haver mais outliers"""
-    dados_temp = dados.copy()
-    total_removidos = 0
-    
-    for i in range(max_iteracoes):
-        outliers = detectar_outliers(dados_temp, coluna)
-        if len(outliers) == 0:
-            break
+        if valor is None or valor == 0:
+            return "0,00"
         
-        dados_temp = dados_temp[~dados_temp.index.isin(outliers.index)]
-        total_removidos += len(outliers)
-    
-    return dados_temp, total_removidos
-
-# Função para calcular regressão linear manualmente
-def calcular_regressao_linear(x, y):
-    """Calcula regressão linear manualmente"""
-    # Remover valores NaN
-    mask = ~np.isnan(x) & ~np.isnan(y)
-    x_clean = x[mask]
-    y_clean = y[mask]
-    
-    if len(x_clean) < 2:
-        return None, None, None
-    
-    n = len(x_clean)
-    x_mean = np.mean(x_clean)
-    y_mean = np.mean(y_clean)
-    
-    numerator = np.sum((x_clean - x_mean) * (y_clean - y_mean))
-    denominator = np.sum((x_clean - x_mean) ** 2)
-    
-    if denominator == 0:
-        return None, None, None
-    
-    slope = numerator / denominator
-    intercept = y_mean - slope * x_mean
-    
-    # Calcular R²
-    y_pred = slope * x_clean + intercept
-    ss_res = np.sum((y_clean - y_pred) ** 2)
-    ss_tot = np.sum((y_clean - y_mean) ** 2)
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-    
-    return slope, intercept, r_squared
-
-# Função para criar gráfico Q-Q simplificado
-def criar_qq_plot(data):
-    """Cria gráfico Q-Q simplificado"""
-    data_clean = data.dropna()
-    if len(data_clean) < 2:
-        return go.Figure()
-    
-    # Calcular quantis
-    n = len(data_clean)
-    theoretical_quantiles = np.sort(np.random.normal(0, 1, n))  # Quantis teóricos aproximados
-    sample_quantiles = np.sort(data_clean)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=theoretical_quantiles,
-        y=sample_quantiles,
-        mode='markers',
-        name='Dados',
-        marker=dict(color='blue', size=6)
-    ))
-    
-    # Adicionar linha de referência
-    max_val = max(theoretical_quantiles.max(), sample_quantiles.max())
-    min_val = min(theoretical_quantiles.min(), sample_quantiles.min())
-    fig.add_trace(go.Scatter(
-        x=[min_val, max_val],
-        y=[min_val, max_val],
-        mode='lines',
-        name='Linha de Referência',
-        line=dict(color='red', dash='dash', width=2)
-    ))
-    
-    fig.update_layout(
-        title="Gráfico Q-Q (Normalidade)",
-        xaxis_title="Quantis Teóricos",
-        yaxis_title="Quantis Amostrais",
-        plot_bgcolor='white',
-        paper_bgcolor='white'
-    )
-    
-    # Remover grids que podem causar barras brancas
-    fig.update_xaxis(showgrid=False, gridcolor='lightgray')
-    fig.update_yaxis(showgrid=False, gridcolor='lightgray')
-    
-    return fig
-
-def main():
-    st.title("📊 Dashboard de Utilidades - Análise Completa")
-    
-    # Sidebar para upload
-    with st.sidebar:
-        st.header("📁 Carregamento de Dados")
+        if pd.isna(valor):
+            return "0,00"
+            
+        format_string = f"{{:.{casas_decimais}f}}"
+        numero_formatado = format_string.format(float(valor))
         
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo Excel:",
-            type=['xlsx', 'xls']
-        )
+        partes = numero_formatado.split('.')
+        parte_inteira = partes[0]
+        parte_decimal = partes[1] if len(partes) > 1 else ''
         
-        if uploaded_file is not None:
-            st.success("✅ Arquivo selecionado!")
+        parte_inteira_com_pontos = ""
+        for i, char in enumerate(reversed(parte_inteira)):
+            if i > 0 and i % 3 == 0:
+                parte_inteira_com_pontos = '.' + parte_inteira_com_pontos
+            parte_inteira_com_pontos = char + parte_inteira_com_pontos
+        
+        if parte_decimal:
+            return f"{parte_inteira_com_pontos},{parte_decimal}"
         else:
-            st.info("📝 Aguardando upload do arquivo...")
-            st.stop()
+            return f"{parte_inteira_com_pontos}"
+            
+    except Exception as e:
+        return f"{valor}"
 
-    # Carregar dados
-    dados = carregar_dados(uploaded_file)
+# CSS para melhorar a aparência e remover barras brancas
+st.markdown("""
+<style>
+    /* Reset de margens e paddings para remover espaçamentos indesejados */
+    .main .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+    }
     
-    if dados is None:
-        st.error("❌ Falha ao carregar os dados.")
-        st.stop()
-
-    # Processar dados
-    dados_processados = dados.copy()
-    colunas_numericas = dados_processados.select_dtypes(include=[np.number]).columns.tolist()
+    /* Remover espaçamento entre elementos */
+    div[data-testid="stVerticalBlock"] > div {
+        gap: 0px !important;
+    }
     
-    # Detectar colunas de data
-    colunas_data = []
-    for col in dados_processados.columns:
-        if any(palavra in col.lower() for palavra in ['data', 'date', 'dia', 'time']):
-            colunas_data.append(col)
-            dados_processados[col] = converter_para_data(dados_processados[col])
+    /* Remover margens de todos os elementos */
+    .stMarkdown, .stMarkdown > div {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    
+    /* Estilo dos botões */
+    .stButton > button {
+        width: 100%;
+        background-color: #4CAF50;
+        color: white;
+        font-size: 18px;
+        font-weight: bold;
+        padding: 12px;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        background-color: #45a049;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    
+    /* Sidebar */
+    .sidebar-header {
+        color: #4CAF50;
+        font-weight: bold;
+        margin-top: 20px;
+        margin-bottom: 10px;
+        font-size: 16px;
+    }
+    
+    /* Caixa de instruções */
+    .instruction-box {
+        background-color: #f8f9fa;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px !important;
+        border-left: 5px solid #4CAF50;
+    }
+    
+    /* Parâmetros */
+    .param-box {
+        background-color: white;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        border: 1px solid #e0e0e0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        min-height: 100px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .param-title {
+        font-weight: bold;
+        color: #2c3e50;
+        margin-bottom: 5px;
+        font-size: 16px;
+    }
+    .param-unit {
+        color: #666;
+        font-size: 14px;
+        margin-top: 5px;
+    }
+    
+    /* Diagrama de fluxo */
+    .flow-diagram {
+        background-color: #f5f9ff;
+        border-radius: 20px;
+        border: 2px solid #d0e3ff;
+        overflow: hidden;
+    }
+    
+    .flow-step {
+        background-color: white;
+        padding: 20px;
+        border-left: 6px solid;
+    }
+    
+    .flow-title {
+        font-weight: bold;
+        margin-bottom: 15px;
+        font-size: 18px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid;
+        text-align: center;
+    }
+    
+    .flow-value {
+        font-size: 32px;
+        font-weight: bold;
+        margin: 10px 0;
+        line-height: 1.2;
+        text-align: center;
+    }
+    
+    .flow-unit {
+        color: #555;
+        font-size: 14px;
+        margin-top: 5px;
+        font-weight: 500;
+        text-align: center;
+    }
+    
+    .flow-descricao {
+        font-size: 12px;
+        color: #777;
+        margin-top: 5px;
+        text-align: center;
+    }
+    
+    .flow-arrow {
+        text-align: center;
+        font-size: 30px;
+        color: #4CAF50;
+        padding: 5px 0;
+        background-color: #f5f9ff;
+    }
+    
+    .flow-column-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+    }
+    
+    /* Cores específicas */
+    .step-entrada {
+        border-left-color: #FF6B6B;
+    }
+    .step-entrada .flow-title {
+        color: #FF6B6B;
+        border-bottom-color: #FF6B6B;
+    }
+    .step-entrada .flow-value {
+        color: #FF6B6B;
+    }
+    
+    .step-resfriamento {
+        border-left-color: #4ECDC4;
+    }
+    .step-resfriamento .flow-title {
+        color: #4ECDC4;
+        border-bottom-color: #4ECDC4;
+    }
+    .step-resfriamento .flow-value {
+        color: #4ECDC4;
+    }
+    
+    .step-perdas {
+        border-left-color: #FFD166;
+    }
+    .step-perdas .flow-title {
+        color: #FFD166;
+        border-bottom-color: #FFD166;
+    }
+    .step-perdas .flow-value {
+        color: #FFD166;
+    }
+    
+    .step-reposicao {
+        border-left-color: #06D6A0;
+    }
+    .step-reposicao .flow-title {
+        color: #06D6A0;
+        border-bottom-color: #06D6A0;
+    }
+    .step-reposicao .flow-value {
+        color: #06D6A0;
+    }
+    
+    /* Seção de Resumo */
+    .resumo-section {
+        background-color: white;
+        border-radius: 15px;
+        padding: 20px;
+        margin-top: 20px !important;
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+        border-top: 5px solid #4CAF50;
+    }
+    
+    .resumo-header {
+        text-align: center;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 3px solid #4CAF50;
+    }
+    
+    .resumo-title {
+        font-size: 24px;
+        font-weight: bold;
+        color: #2c3e50;
+        margin-bottom: 5px;
+    }
+    
+    .resumo-subtitle {
+        font-size: 16px;
+        color: #666;
+        font-weight: 500;
+    }
+    
+    /* Tabelas */
+    .info-card {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 4px solid;
+        margin-bottom: 15px !important;
+    }
+    
+    .info-card-title {
+        font-size: 18px;
+        font-weight: bold;
+        margin-bottom: 15px !important;
+        padding-bottom: 8px !important;
+        color: #2c3e50;
+        border-bottom: 2px solid;
+    }
+    
+    .secao-dados {
+        border-left-color: #FF6B6B;
+    }
+    .secao-dados .info-card-title {
+        border-bottom-color: #FF6B6B;
+        color: #FF6B6B;
+    }
+    
+    .secao-resultados {
+        border-left-color: #4ECDC4;
+    }
+    .secao-resultados .info-card-title {
+        border-bottom-color: #4ECDC4;
+        color: #4ECDC4;
+    }
+    
+    .secao-perdas {
+        border-left-color: #FFD166;
+    }
+    .secao-perdas .info-card-title {
+        border-bottom-color: #FFD166;
+        color: #FFD166;
+    }
+    
+    /* Tabelas estilizadas */
+    .dados-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+        background-color: white;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .dados-table th {
+        background-color: #2c3e50;
+        color: white;
+        padding: 12px;
+        text-align: left;
+        font-weight: bold;
+        font-size: 14px;
+    }
+    
+    .dados-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e0e0e0;
+        vertical-align: middle;
+    }
+    
+    .dados-table tr:hover {
+        background-color: #f8f9fa;
+    }
+    
+    .valor-cell {
+        text-align: right;
+        font-weight: bold;
+        color: #2c3e50;
+        font-size: 15px;
+        white-space: nowrap;
+    }
+    
+    .unidade-cell {
+        text-align: center;
+        color: #666;
+        font-size: 13px;
+        white-space: nowrap;
+        width: 80px;
+    }
+    
+    .observacao-cell {
+        font-size: 12px;
+        color: #666;
+        font-style: italic;
+    }
+    
+    /* Balanço Hídrico */
+    .balanco-container {
+        background-color: #e8f5e9;
+        padding: 20px;
+        border-radius: 12px;
+        margin-top: 15px !important;
+        border: 2px solid #4CAF50;
+        text-align: center;
+    }
+    
+    .balanco-title {
+        font-size: 20px;
+        font-weight: bold;
+        color: #2c3e50;
+        margin-bottom: 15px;
+    }
+    
+    .balanco-equacao {
+        font-size: 18px;
+        margin: 10px 0;
+        line-height: 1.6;
+    }
+    
+    .balanco-total {
+        font-size: 22px;
+        font-weight: bold;
+        color: #4CAF50;
+        margin-top: 15px;
+    }
+    
+    /* Remover espaçamento extra dos elementos do Streamlit */
+    hr {
+        margin: 10px 0 !important;
+    }
+    
+    h1, h2, h3 {
+        margin-bottom: 10px !important;
+    }
+    
+    /* Centralização */
+    .center-container {
+        display: flex;
+        justify-content: center;
+        margin: 10px 0;
+    }
+    
+    /* Tooltips */
+    .info-tooltip {
+        cursor: help;
+        border-bottom: 1px dotted #999;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    # Sidebar para filtros globais
-    with st.sidebar:
-        st.header("🎛️ Filtros Globais")
-        
-        # Filtro de período com botão (x) para limpar
-        if colunas_data:
-            coluna_data_filtro = st.selectbox("Coluna de data para filtro:", colunas_data)
-            if pd.api.types.is_datetime64_any_dtype(dados_processados[coluna_data_filtro]):
-                min_date = dados_processados[coluna_data_filtro].min()
-                max_date = dados_processados[coluna_data_filtro].max()
-                
-                # Mostrar filtro atual e botão para limpar
-                col_filtro1, col_filtro2 = st.columns([3, 1])
-                with col_filtro1:
-                    st.write("**Período selecionado:**")
-                    if 'start_date' in st.session_state and 'end_date' in st.session_state:
-                        st.info(f"📅 {st.session_state.start_date.date()} até {st.session_state.end_date.date()}")
-                    else:
-                        st.info("📅 Nenhum filtro aplicado")
-                
-                with col_filtro2:
-                    if st.button("✖️ Limpar filtro", key="limpar_filtro_data"):
-                        if 'start_date' in st.session_state:
-                            del st.session_state.start_date
-                            del st.session_state.end_date
-                        st.rerun()
-                
-                date_range = st.date_input(
-                    "Selecione o período:",
-                    value=(min_date, max_date),
-                    min_value=min_date,
-                    max_value=max_date,
-                    key="date_range_filter"
-                )
-                
-                if len(date_range) == 2 and date_range != (min_date, max_date):
-                    start_date, end_date = date_range
-                    st.session_state.start_date = pd.Timestamp(start_date)
-                    st.session_state.end_date = pd.Timestamp(end_date)
-                    dados_processados = dados_processados[
-                        (dados_processados[coluna_data_filtro] >= st.session_state.start_date) &
-                        (dados_processados[coluna_data_filtro] <= st.session_state.end_date)
-                    ]
-        
-        # Filtro de outliers com remoção recursiva
-        st.subheader("🔍 Gerenciamento de Outliers")
-        remover_outliers = st.checkbox("Remover outliers automaticamente")
-        
-        if remover_outliers and colunas_numericas:
-            coluna_outliers = st.selectbox("Coluna para análise de outliers:", colunas_numericas)
-            if coluna_outliers:
-                # Detectar outliers inicialmente
-                outliers_inicial = detectar_outliers(dados_processados, coluna_outliers)
-                st.info(f"📊 {len(outliers_inicial)} outliers detectados inicialmente")
-                
-                if st.button("Remover outliers (recursivamente)"):
-                    dados_processados, total_removidos = remover_outliers_recursivamente(
-                        dados_processados, coluna_outliers, max_iteracoes=5
-                    )
-                    st.success(f"✅ {total_removidos} outliers removidos recursivamente!")
-                    # Verificar se novos outliers apareceram
-                    novos_outliers = detectar_outliers(dados_processados, coluna_outliers)
-                    if len(novos_outliers) > 0:
-                        st.warning(f"⚠️ Ainda restam {len(novos_outliers)} outliers. Execute novamente se necessário.")
-                    else:
-                        st.success("🎉 Nenhum outlier remanescente!")
+st.title("🏭 Calculadora de Torre de Resfriamento")
+st.markdown("---")
 
-    # Abas principais
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 Análise de Séries Temporais", 
-        "📊 Estatística Detalhada", 
-        "🔥 Análise de Correlações", 
-        "🔍 Gráficos de Dispersão"
-    ])
+# Inicializar estado da sessão
+if 'calcular' not in st.session_state:
+    st.session_state.calcular = False
 
-    with tab1:
-        st.header("📈 Análise de Séries Temporais")
-        
-        if colunas_data and colunas_numericas:
-            col1, col2, col3 = st.columns([2, 2, 1])
-            
-            with col1:
-                coluna_data = st.selectbox("Coluna de Data:", colunas_data, key="temp_data")
-            with col2:
-                coluna_valor = st.selectbox("Coluna para Análise:", colunas_numericas, key="temp_valor")
-            with col3:
-                tipo_grafico = st.selectbox("Tipo de Gráfico:", 
-                                           ["Linha", "Área", "Barra", "Scatter", "Boxplot Temporal"])
-            
-            if coluna_data and coluna_valor:
-                dados_temp = dados_processados.sort_values(by=coluna_data)
-                unidade = obter_unidade_medida(coluna_valor)
-                
-                # Criar gráfico baseado no tipo selecionado
-                if tipo_grafico == "Linha":
-                    fig = px.line(dados_temp, x=coluna_data, y=coluna_valor, 
-                                 title=f"Evolução Temporal de {coluna_valor} ({unidade})")
-                elif tipo_grafico == "Área":
-                    fig = px.area(dados_temp, x=coluna_data, y=coluna_valor,
-                                 title=f"Evolução Temporal de {coluna_valor} ({unidade})")
-                elif tipo_grafico == "Barra":
-                    fig = px.bar(dados_temp, x=coluna_data, y=coluna_valor,
-                                title=f"Evolução Temporal de {coluna_valor} ({unidade})")
-                elif tipo_grafico == "Scatter":
-                    fig = px.scatter(dados_temp, x=coluna_data, y=coluna_valor,
-                                    title=f"Relação Temporal de {coluna_valor} ({unidade})")
-                else:  # Boxplot Temporal
-                    # Criar períodos mensais para boxplot
-                    dados_temp['Periodo'] = dados_temp[coluna_data].dt.to_period('M').astype(str)
-                    fig = px.box(dados_temp, x='Periodo', y=coluna_valor,
-                                title=f"Distribuição Mensal de {coluna_valor} ({unidade})")
-                
-                # Remover grids e barras brancas
-                fig.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white'
-                )
-                fig.update_xaxis(showgrid=False, gridcolor='lightgray')
-                fig.update_yaxis(showgrid=False, gridcolor='lightgray')
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Estatísticas temporais COMPLETAS com unidades
-                st.subheader("📊 Estatísticas Temporais Detalhadas")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Média", formatar_com_unidade(dados_temp[coluna_valor].mean(), unidade))
-                    st.metric("Mediana", formatar_com_unidade(dados_temp[coluna_valor].median(), unidade))
-                    moda_val = dados_temp[coluna_valor].mode().iloc[0] if not dados_temp[coluna_valor].mode().empty else None
-                    st.metric("Moda", formatar_com_unidade(moda_val, unidade) if moda_val else 'N/A')
-                
-                with col2:
-                    st.metric("Desvio Padrão", formatar_com_unidade(dados_temp[coluna_valor].std(), unidade))
-                    st.metric("Variância", formatar_com_unidade(dados_temp[coluna_valor].var(), unidade))
-                    cv = (dados_temp[coluna_valor].std()/dados_temp[coluna_valor].mean())*100 if dados_temp[coluna_valor].mean() != 0 else 0
-                    st.metric("Coef. Variação", f"{cv:.1f}%")
-                
-                with col3:
-                    st.metric("Mínimo", formatar_com_unidade(dados_temp[coluna_valor].min(), unidade))
-                    st.metric("Máximo", formatar_com_unidade(dados_temp[coluna_valor].max(), unidade))
-                    st.metric("Amplitude", formatar_com_unidade(dados_temp[coluna_valor].max() - dados_temp[coluna_valor].min(), unidade))
-                
-                with col4:
-                    Q1 = dados_temp[coluna_valor].quantile(0.25)
-                    Q3 = dados_temp[coluna_valor].quantile(0.75)
-                    st.metric("Q1 (25%)", formatar_com_unidade(Q1, unidade))
-                    st.metric("Q3 (75%)", formatar_com_unidade(Q3, unidade))
-                    st.metric("IQR", formatar_com_unidade(Q3 - Q1, unidade))
-                
-                # Análise de tendência
-                st.subheader("📈 Análise de Tendência")
-                if len(dados_temp) > 1:
-                    crescimento = ((dados_temp[coluna_valor].iloc[-1] - dados_temp[coluna_valor].iloc[0]) / dados_temp[coluna_valor].iloc[0] * 100) if dados_temp[coluna_valor].iloc[0] != 0 else 0
-                    
-                    col_t1, col_t2, col_t3 = st.columns(3)
-                    with col_t1:
-                        st.metric("Crescimento Total", f"{crescimento:.1f}%")
-                    with col_t2:
-                        # Tendência linear simples
-                        x = np.arange(len(dados_temp))
-                        y = dados_temp[coluna_valor].values
-                        coef = np.polyfit(x, y, 1)[0]
-                        tendencia = "↗️ Alta" if coef > 0 else "↘️ Baixa" if coef < 0 else "➡️ Estável"
-                        st.metric("Tendência", tendencia)
-                    with col_t3:
-                        st.metric("Taxa de Variação", formatar_com_unidade(coef, f"{unidade}/ponto"))
-
-    with tab2:
-        st.header("📊 Estatística Detalhada")
-        
-        if colunas_numericas:
-            coluna_analise = st.selectbox("Selecione a coluna para análise:", colunas_numericas, key="stats_col")
-            
-            if coluna_analise:
-                unidade = obter_unidade_medida(coluna_analise)
-                
-                # Estatísticas básicas
-                st.subheader("📋 Estatísticas Descritivas Completas")
-                stats_data = dados_processados[coluna_analise].describe()
-                
-                col1, col2, col3, col4 = st.columns(4)
-                metrics = [
-                    ("Média", stats_data['mean']),
-                    ("Mediana", stats_data['50%']),
-                    ("Moda", dados_processados[coluna_analise].mode().iloc[0] if not dados_processados[coluna_analise].mode().empty else np.nan),
-                    ("Desvio Padrão", stats_data['std']),
-                    ("Variância", stats_data['std']**2),
-                    ("Coef. Variação", (stats_data['std']/stats_data['mean'])*100 if stats_data['mean'] != 0 else 0),
-                    ("Mínimo", stats_data['min']),
-                    ("Máximo", stats_data['max']),
-                    ("Amplitude", stats_data['max'] - stats_data['min']),
-                    ("Q1 (25%)", stats_data['25%']),
-                    ("Q3 (75%)", stats_data['75%']),
-                    ("IQR", stats_data['75%'] - stats_data['25%'])
-                ]
-                
-                for i, (name, value) in enumerate(metrics):
-                    with [col1, col2, col3, col4][i % 4]:
-                        if not np.isnan(value):
-                            if name in ["Coef. Variação"]:
-                                st.metric(name, f"{value:.1f}%")
-                            else:
-                                st.metric(name, formatar_com_unidade(value, unidade if name not in ["Coef. Variação"] else ""))
-                
-                # Análise de distribuição COMPLETA
-                st.subheader("📈 Análise de Distribuição")
-                
-                dist_col1, dist_col2 = st.columns(2)
-                
-                with dist_col1:
-                    # Coeficientes de forma
-                    skewness = dados_processados[coluna_analise].skew()
-                    kurtosis = dados_processados[coluna_analise].kurtosis()
-                    
-                    st.write("**📊 Medidas de Forma:**")
-                    st.metric("Assimetria", f"{skewness:.3f}")
-                    st.metric("Curtose", f"{kurtosis:.3f}")
-                    
-                    # Interpretação
-                    st.write("**📝 Interpretação:**")
-                    if abs(skewness) < 0.5:
-                        st.success("• Distribuição aproximadamente simétrica")
-                    elif abs(skewness) < 1:
-                        st.warning("• Distribuição moderadamente assimétrica")
-                    else:
-                        st.error("• Distribuição fortemente assimétrica")
-                    
-                    if abs(kurtosis) < 0.5:
-                        st.success("• Curtose próxima da normal")
-                    elif abs(kurtosis) < 1:
-                        st.warning("• Curtose moderadamente diferente da normal")
-                    else:
-                        st.error("• Curtose muito diferente da normal")
-                
-                with dist_col2:
-                    # Gráficos de distribuição
-                    fig = px.histogram(dados_processados, x=coluna_analise, 
-                                      title=f"Distribuição de {coluna_analise} ({unidade})",
-                                      nbins=30, marginal="box")
-                    fig.update_layout(
-                        plot_bgcolor='white',
-                        paper_bgcolor='white'
-                    )
-                    fig.update_xaxis(showgrid=False, gridcolor='lightgray')
-                    fig.update_yaxis(showgrid=False, gridcolor='lightgray')
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # Gráfico Q-Q
-                st.subheader("📊 Gráfico Q-Q (Normalidade)")
-                fig_qq = criar_qq_plot(dados_processados[coluna_analise])
-                st.plotly_chart(fig_qq, use_container_width=True)
-                
-                # Análise de outliers
-                st.subheader("🔍 Análise de Outliers")
-                outliers = detectar_outliers(dados_processados, coluna_analise)
-                st.metric("Número de Outliers", len(outliers))
-                
-                if len(outliers) > 0:
-                    with st.expander("📋 Detalhes dos Outliers"):
-                        outliers_formatados = outliers[[coluna_analise]].copy()
-                        outliers_formatados[coluna_analise] = outliers_formatados[coluna_analise].apply(
-                            lambda x: formatar_com_unidade(x, unidade)
-                        )
-                        st.dataframe(outliers_formatados)
-
-    with tab3:
-        st.header("🔥 Análise de Correlações")
-        
-        if len(colunas_numericas) > 1:
-            # Selecionar variáveis para correlação
-            st.subheader("🎯 Seleção de Variáveis")
-            variaveis_selecionadas = st.multiselect(
-                "Selecione as variáveis para análise de correlação:",
-                options=colunas_numericas,
-                default=colunas_numericas[:min(8, len(colunas_numericas))],
-                key="corr_vars"
+# Sidebar para parâmetros de entrada
+with st.sidebar:
+    st.header("⚙️ Parâmetros de Entrada")
+    
+    st.markdown('<div class="sidebar-header">Dados Básicos</div>', unsafe_allow_html=True)
+    VZ_rec = st.number_input("Vazão de Recirculação (m³/h)", min_value=0.0, value=None, step=50.0, format="%.1f", placeholder="Ex: 1.000,0")
+    Vol_estatico = st.number_input("Volume Estático (m³)", min_value=0.0, value=None, step=5.0, format="%.1f", placeholder="Ex: 50,0")
+    T_retorno = st.number_input("Temperatura de Retorno (°C)", min_value=0.0, value=None, step=1.0, format="%.1f", placeholder="Ex: 40,0")
+    T_bacia = st.number_input("Temperatura de Bacia (°C)", min_value=0.0, value=None, step=1.0, format="%.1f", placeholder="Ex: 30,0")
+    perc_arraste = st.number_input("% Arraste", min_value=0.0, max_value=100.0, value=None, step=0.01, format="%.2f", placeholder="Ex: 0,10")
+    perc_utilizacao = st.number_input("% Utilização", min_value=0.0, max_value=100.0, value=100.0, step=5.0, format="%.1f")
+    
+    st.markdown("---")
+    st.markdown('<div class="sidebar-header">Ciclos de Concentração</div>', unsafe_allow_html=True)
+    
+    parametros = {
+        "Sílica": {"torre": None, "reposicao": None, "unidade": "ppm"},
+        "Cloreto": {"torre": None, "reposicao": None, "unidade": "ppm"},
+        "Dureza Total": {"torre": None, "reposicao": None, "unidade": "ppm CaCO₃"},
+        "Alcalinidade Total": {"torre": None, "reposicao": None, "unidade": "ppm CaCO₃"},
+        "Ferro Total": {"torre": None, "reposicao": None, "unidade": "ppm"}
+    }
+    
+    ciclos_calculados = {}
+    
+    for param, dados in parametros.items():
+        col1, col2 = st.columns(2)
+        with col1:
+            torre_val = st.number_input(
+                f"{param} Torre", 
+                min_value=0.0, 
+                value=dados["torre"],
+                step=10.0 if "ppm" in dados["unidade"] else 0.1,
+                key=f"torre_{param}",
+                format="%.1f",
+                help=f"{param} na torre ({dados['unidade']})",
+                placeholder="Ex: 150,0"
             )
-            
-            if len(variaveis_selecionadas) > 1:
-                # Matriz de correlação
-                corr_matrix = dados_processados[variaveis_selecionadas].corr()
-                
-                fig = px.imshow(corr_matrix, 
-                               title="Matriz de Correlação",
-                               color_continuous_scale="RdBu_r",
-                               aspect="auto",
-                               text_auto=True)
-                fig.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Top correlações DETALHADO
-                st.subheader("🔝 Top 10 Maiores e Menores Correlações")
-                
-                correlations = []
-                for i in range(len(corr_matrix.columns)):
-                    for j in range(i+1, len(corr_matrix.columns)):
-                        correlations.append({
-                            'Variável 1': corr_matrix.columns[i],
-                            'Variável 2': corr_matrix.columns[j],
-                            'Correlação': corr_matrix.iloc[i, j]
-                        })
-                
-                df_corr = pd.DataFrame(correlations)
-                df_corr['Abs_Correlation'] = df_corr['Correlação'].abs()
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**📈 10 Maiores Correlações:**")
-                    top_correlations = df_corr.nlargest(10, 'Abs_Correlation')
-                    for _, row in top_correlations.iterrows():
-                        corr_color = "🟢" if row['Correlação'] > 0 else "🔴"
-                        corr_strength = "Forte" if abs(row['Correlação']) > 0.7 else "Moderada" if abs(row['Correlação']) > 0.3 else "Fraca"
-                        st.write(f"{corr_color} **{row['Correlação']:.3f}** - {corr_strength}")
-                        st.write(f"   {row['Variável 1']} ↔ {row['Variável 2']}")
-                        st.write("---")
-                
-                with col2:
-                    st.write("**📉 10 Menores Correlações:**")
-                    bottom_correlations = df_corr.nsmallest(10, 'Abs_Correlation')
-                    for _, row in bottom_correlations.iterrows():
-                        corr_color = "🟢" if row['Correlação'] > 0 else "🔴"
-                        corr_strength = "Forte" if abs(row['Correlação']) > 0.7 else "Moderada" if abs(row['Correlação']) > 0.3 else "Fraca"
-                        st.write(f"{corr_color} **{row['Correlação']:.3f}** - {corr_strength}")
-                        st.write(f"   {row['Variável 1']} ↔ {row['Variável 2']}")
-                        st.write("---")
-
-    with tab4:
-        st.header("🔍 Gráficos de Dispersão com Regressão")
+        with col2:
+            repos_val = st.number_input(
+                f"{param} Reposição", 
+                min_value=0.0,
+                value=dados["reposicao"],
+                step=5.0 if "ppm" in dados["unidade"] else 0.1,
+                key=f"repos_{param}",
+                format="%.1f",
+                help=f"{param} na reposição ({dados['unidade']})",
+                placeholder="Ex: 50,0"
+            )
         
-        if len(colunas_numericas) >= 2:
-            col1, col2 = st.columns(2)
-            with col1:
-                eixo_x = st.selectbox("Eixo X:", colunas_numericas, key="scatter_x")
-            with col2:
-                eixo_y = st.selectbox("Eixo Y:", colunas_numericas, key="scatter_y")
+        if repos_val is not None and repos_val > 0 and torre_val is not None:
+            ciclo = torre_val / repos_val
+            ciclos_calculados[param] = ciclo
+    
+    # Selecionar qual ciclo usar
+    st.markdown("---")
+    st.markdown('<div class="sidebar-header">Selecionar Ciclo para Cálculos</div>', unsafe_allow_html=True)
+    
+    if ciclos_calculados:
+        opcoes = list(ciclos_calculados.keys())
+        opcoes.insert(0, "Usar valor manual")
+        
+        ciclo_selecionado = st.selectbox("Escolha o ciclo para os cálculos:", opcoes)
+        
+        if ciclo_selecionado == "Usar valor manual":
+            ciclos = st.number_input("Ciclos de Concentração (manual)", 
+                                     min_value=1.0, value=None, step=0.5, format="%.2f",
+                                     placeholder="Ex: 3,00")
+        else:
+            ciclos = ciclos_calculados[ciclo_selecionado]
+            st.success(f"**Usando ciclo de {ciclo_selecionado}:** {formatar_numero(ciclos, 2)} vezes")
+    else:
+        st.warning("Insira valores de parâmetros para calcular ciclos")
+        ciclos = st.number_input("Ciclos de Concentração", 
+                                 min_value=1.0, value=None, step=0.5, format="%.2f",
+                                 placeholder="Ex: 3,00")
+    
+    st.markdown("---")
+    
+    # Botão de calcular
+    if st.button("📠 CALCULAR", type="primary", use_container_width=True):
+        st.session_state.calcular = True
+        st.rerun()
+
+# Área principal para resultados
+if st.session_state.calcular:
+    try:
+        # Tratar valores None
+        VZ_rec = VZ_rec if VZ_rec is not None else 0.0
+        Vol_estatico = Vol_estatico if Vol_estatico is not None else 0.0
+        T_retorno = T_retorno if T_retorno is not None else 0.0
+        T_bacia = T_bacia if T_bacia is not None else 0.0
+        perc_arraste = perc_arraste if perc_arraste is not None else 0.0
+        perc_utilizacao = perc_utilizacao if perc_utilizacao is not None else 100.0
+        ciclos = ciclos if ciclos is not None else 1.0
+        
+        # Converter porcentagens para decimal
+        perc_utilizacao_decimal = perc_utilizacao / 100.0
+        
+        # Cálculos
+        delta_T = T_retorno - T_bacia
+        evaporacao = VZ_rec * delta_T * (0.85 / 556) * perc_utilizacao_decimal
+        
+        if ciclos > 1:
+            perda_liquida = evaporacao / (ciclos - 1)
+        else:
+            perda_liquida = 0.0
+            if ciclos <= 1 and ciclos > 0:
+                st.error("⚠️ Ciclos de concentração devem ser maiores que 1!")
+        
+        if perda_liquida > 0:
+            HTI = 0.693 * (Vol_estatico / perda_liquida)
+        else:
+            HTI = 0.0
+        
+        perda_arraste = (perc_arraste / 100.0) * VZ_rec * perc_utilizacao_decimal
+        purgas = perda_liquida - perda_arraste
+        if purgas < 0:
+            purgas = 0.0
+            st.warning("Perda por arraste maior que perda líquida - purga ajustada para zero")
+        
+        reposicao = evaporacao + perda_liquida
+        
+        # SEÇÃO 1: FLUXO DA TORRE
+        st.markdown('<h2 style="text-align: center; color: #1f77b4; margin: 10px 0; font-size: 28px;">📊 FLUXO DA TORRE DE RESFRIAMENTO</h2>', unsafe_allow_html=True)
+        
+        # Diagrama do Fluxo da Torre
+        st.markdown('<div class="flow-diagram">', unsafe_allow_html=True)
+        
+        # Seção 1: Entrada de Água Quente
+        st.markdown('<div class="flow-step step-entrada">', unsafe_allow_html=True)
+        st.markdown('<div class="flow-title">🔥 ENTRADA - ÁGUA QUENTE DO PROCESSO</div>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">🌡️ {formatar_numero(T_retorno, 1)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Temperatura de Retorno (°C)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">💧 {formatar_numero(VZ_rec, 1)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Vazão de Recirculação (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">⚙️ {formatar_numero(perc_utilizacao, 1)}%</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Utilização da Torre</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="flow-arrow">⬇️</div>', unsafe_allow_html=True)
+        
+        # Seção 2: Resfriamento na Torre
+        st.markdown('<div class="flow-step step-resfriamento">', unsafe_allow_html=True)
+        st.markdown('<div class="flow-title">🏭 RESFRIAMENTO NA TORRE</div>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">🌡️ {formatar_numero(delta_T, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">ΔT (Redução de Temperatura) (°C)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">🌡️ {formatar_numero(T_bacia, 1)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Temperatura da Bacia (°C)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">💨 {formatar_numero(evaporacao, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Evaporação (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="flow-arrow">⬇️</div>', unsafe_allow_html=True)
+        
+        # Seção 3: Perdas e Controle
+        st.markdown('<div class="flow-step step-perdas">', unsafe_allow_html=True)
+        st.markdown('<div class="flow-title">💧 PERDAS E CONTROLE</div>', unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">💧 {formatar_numero(perda_liquida, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Perda Líquida Total (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">🌪️ {formatar_numero(perda_arraste, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Perda por Arraste (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-descricao">({formatar_numero(perc_arraste, 2)}% do recirculado)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">⬇️ {formatar_numero(purgas, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Purga do Sistema (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('<div class="flow-arrow">⬇️</div>', unsafe_allow_html=True)
+        
+        # Seção 4: Reposição e Balanço Hídrico
+        st.markdown('<div class="flow-step step-reposicao">', unsafe_allow_html=True)
+        st.markdown('<div class="flow-title">🔄 REPOSIÇÃO E BALANÇO HÍDRICO</div>', unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">🚰 {formatar_numero(reposicao, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Reposição Total (m³/h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">♻️ {formatar_numero(ciclos, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">Ciclos de Concentração</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown('<div class="flow-column-content">', unsafe_allow_html=True)
+            st.markdown(f'<div class="flow-value">⏱️ {formatar_numero(HTI, 2)}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="flow-unit">HTI - Tempo Retenção (h)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)  # Fecha flow-diagram
+        
+        # SEÇÃO 2: RESUMO COMPACTO
+        st.markdown('<div class="resumo-section">', unsafe_allow_html=True)
+        
+        # Cabeçalho do resumo
+        st.markdown('<div class="resumo-header">', unsafe_allow_html=True)
+        st.markdown('<div class="resumo-title">📋 RESUMO DO CÁLCULO</div>', unsafe_allow_html=True)
+        st.markdown('<div class="resumo-subtitle">Dados principais e balanço hídrico</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Tabela 1: Dados de Entrada
+        st.markdown('<div class="info-card secao-dados">', unsafe_allow_html=True)
+        st.markdown('<div class="info-card-title">📥 DADOS DE ENTRADA</div>', unsafe_allow_html=True)
+        
+        tabela_entrada_html = f"""
+        <table class="dados-table">
+            <thead>
+                <tr>
+                    <th>Parâmetro</th>
+                    <th style="text-align: center;">Valor</th>
+                    <th style="text-align: center;">Unidade</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Vazão de Recirculação</td><td class="valor-cell">{formatar_numero(VZ_rec, 1)}</td><td class="unidade-cell">m³/h</td></tr>
+                <tr><td>Volume Estático</td><td class="valor-cell">{formatar_numero(Vol_estatico, 1)}</td><td class="unidade-cell">m³</td></tr>
+                <tr><td>Temperatura de Retorno</td><td class="valor-cell">{formatar_numero(T_retorno, 1)}</td><td class="unidade-cell">°C</td></tr>
+                <tr><td>Temperatura da Bacia</td><td class="valor-cell">{formatar_numero(T_bacia, 1)}</td><td class="unidade-cell">°C</td></tr>
+                <tr><td>% Arraste</td><td class="valor-cell">{formatar_numero(perc_arraste, 2)}</td><td class="unidade-cell">%</td></tr>
+                <tr><td>% Utilização</td><td class="valor-cell">{formatar_numero(perc_utilizacao, 1)}</td><td class="unidade-cell">%</td></tr>
+                <tr><td>Ciclos de Concentração</td><td class="valor-cell">{formatar_numero(ciclos, 2)}</td><td class="unidade-cell">vezes</td></tr>
+            </tbody>
+        </table>
+        """
+        st.markdown(tabela_entrada_html, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Tabela 2: Resultados do Cálculo
+        st.markdown('<div class="info-card secao-resultados">', unsafe_allow_html=True)
+        st.markdown('<div class="info-card-title">📈 RESULTADOS DO CÁLCULO</div>', unsafe_allow_html=True)
+        
+        tabela_resultados_html = f"""
+        <table class="dados-table">
+            <thead><tr><th>Parâmetro</th><th style="text-align: center;">Valor</th><th style="text-align: center;">Unidade</th></tr></thead>
+            <tbody>
+                <tr><td>ΔT (Redução de Temperatura)</td><td class="valor-cell">{formatar_numero(delta_T, 2)}</td><td class="unidade-cell">°C</td></tr>
+                <tr><td>Evaporação</td><td class="valor-cell">{formatar_numero(evaporacao, 2)}</td><td class="unidade-cell">m³/h</td></tr>
+                <tr><td>Perda Líquida Total</td><td class="valor-cell">{formatar_numero(perda_liquida, 2)}</td><td class="unidade-cell">m³/h</td></tr>
+                <tr><td>Reposição Total</td><td class="valor-cell">{formatar_numero(reposicao, 2)}</td><td class="unidade-cell">m³/h</td></tr>
+                <tr><td>HTI (Tempo de Retenção)</td><td class="valor-cell">{formatar_numero(HTI, 2)}</td><td class="unidade-cell">horas</td></tr>
+            </tbody>
+        </table>
+        """
+        st.markdown(tabela_resultados_html, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Tabela 3: Detalhamento das Perdas
+        st.markdown('<div class="info-card secao-perdas">', unsafe_allow_html=True)
+        st.markdown('<div class="info-card-title">📉 DETALHAMENTO DAS PERDAS</div>', unsafe_allow_html=True)
+        
+        tabela_perdas_html = f"""
+        <table class="dados-table">
+            <thead><tr><th>Tipo de Perda</th><th style="text-align: center;">Valor</th><th style="text-align: center;">Unidade</th><th>Observação</th></tr></thead>
+            <tbody>
+                <tr><td>Perda por Arraste</td><td class="valor-cell">{formatar_numero(perda_arraste, 2)}</td><td class="unidade-cell">m³/h</td><td class="observacao-cell">({formatar_numero(perc_arraste, 2)}% da vazão)</td></tr>
+                <tr><td>Purga do Sistema</td><td class="valor-cell">{formatar_numero(purgas, 2)}</td><td class="unidade-cell">m³/h</td><td class="observacao-cell">(Controle de qualidade)</td></tr>
+                <tr><td>Perda Líquida Total</td><td class="valor-cell">{formatar_numero(perda_liquida, 2)}</td><td class="unidade-cell">m³/h</td><td class="observacao-cell">(Soma: Arraste + Purga)</td></tr>
+            </tbody>
+        </table>
+        """
+        st.markdown(tabela_perdas_html, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Balanço Hídrico Destacado
+        st.markdown('<div class="balanco-container">', unsafe_allow_html=True)
+        st.markdown('<div class="balanco-title">⚖️ BALANÇO HÍDRICO</div>', unsafe_allow_html=True)
+        
+        st.markdown(f'<div class="balanco-equacao"><strong>💨 Evaporação:</strong> {formatar_numero(evaporacao, 2)} m³/h</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="balanco-equacao"><strong>💧 Perda Líquida Total:</strong> {formatar_numero(perda_liquida, 2)} m³/h</div>', unsafe_allow_html=True)
+        st.markdown('<div class="balanco-equacao" style="font-size: 20px; margin: 10px 0;">+</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="balanco-total">🚰 <strong>REPOSIÇÃO TOTAL:</strong> {formatar_numero(reposicao, 2)} m³/h</div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)  # Fecha balanço-container
+        
+        st.markdown('</div>', unsafe_allow_html=True)  # Fecha resumo-section
+        
+        # BOTÕES DE AÇÃO
+        col_b1, col_b2, col_b3 = st.columns(3)
+        
+        with col_b1:
+            if st.button("🔄 Novo Cálculo", use_container_width=True):
+                st.session_state.calcular = False
+                st.rerun()
+        
+        with col_b2:
+            # Criar dados para exportação
+            dados_exportacao = {
+                "Parâmetro": [
+                    "Vazão de Recirculação (m³/h)",
+                    "Volume Estático (m³)",
+                    "Temperatura de Retorno (°C)",
+                    "Temperatura de Bacia (°C)",
+                    "% Arraste",
+                    "% Utilização",
+                    "Ciclos de Concentração (vezes)",
+                    "Delta Temperatura (°C)",
+                    "Evaporação (m³/h)",
+                    "Perda Líquida (m³/h)",
+                    "HTI (h)",
+                    "Perda por Arraste (m³/h)",
+                    "Purga do Sistema (m³/h)",
+                    "Reposição (m³/h)"
+                ],
+                "Valor": [
+                    formatar_numero(VZ_rec, 1),
+                    formatar_numero(Vol_estatico, 1),
+                    formatar_numero(T_retorno, 1),
+                    formatar_numero(T_bacia, 1),
+                    formatar_numero(perc_arraste, 2),
+                    formatar_numero(perc_utilizacao, 1),
+                    formatar_numero(ciclos, 2),
+                    formatar_numero(delta_T, 1),
+                    formatar_numero(evaporacao, 2),
+                    formatar_numero(perda_liquida, 2),
+                    formatar_numero(HTI, 1),
+                    formatar_numero(perda_arraste, 2),
+                    formatar_numero(purgas, 2),
+                    formatar_numero(reposicao, 2)
+                ]
+            }
             
-            if eixo_x and eixo_y:
-                unidade_x = obter_unidade_medida(eixo_x)
-                unidade_y = obter_unidade_medida(eixo_y)
-                
-                # Gráfico de dispersão SEM trendline (que causa o erro)
-                fig = px.scatter(dados_processados, x=eixo_x, y=eixo_y, 
-                                title=f"{eixo_y} ({unidade_y}) vs {eixo_x} ({unidade_x})",
-                                trendline=None)  # Explicitamente removido
-                
-                # Calcular regressão linear manualmente
-                slope, intercept, r_squared = calcular_regressao_linear(
-                    dados_processados[eixo_x].values,
-                    dados_processados[eixo_y].values
-                )
-                
-                # Adicionar linha de regressão manualmente se possível
-                if slope is not None and intercept is not None:
-                    x_range = np.linspace(dados_processados[eixo_x].min(), dados_processados[eixo_x].max(), 100)
-                    y_pred = slope * x_range + intercept
-                    
-                    fig.add_trace(go.Scatter(
-                        x=x_range,
-                        y=y_pred,
-                        mode='lines',
-                        name='Linha de Regressão',
-                        line=dict(color='red', width=2)
-                    ))
-                    
-                    # Adicionar equação da reta
-                    equation = f"y = {slope:.2f}x + {intercept:.2f}"
-                    r2_text = f"R² = {r_squared:.3f}"
-                    
-                    fig.add_annotation(
-                        x=0.05, y=0.95,
-                        xref="paper", yref="paper",
-                        text=f"{equation}<br>{r2_text}",
-                        showarrow=False,
-                        bgcolor="white",
-                        bordercolor="black",
-                        borderwidth=1
-                    )
-                
-                # Remover grids e barras brancas
-                fig.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white'
-                )
-                fig.update_xaxis(
-                    title=f"{eixo_x} ({unidade_x})",
-                    showgrid=False,
-                    gridcolor='lightgray'
-                )
-                fig.update_yaxis(
-                    title=f"{eixo_y} ({unidade_y})",
-                    showgrid=False,
-                    gridcolor='lightgray'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Estatísticas de correlação COMPLETAS
-                st.subheader("📊 Estatísticas de Correlação e Regressão")
-                
-                correlacao = dados_processados[eixo_x].corr(dados_processados[eixo_y])
-                
-                col_stat1, col_stat2, col_stat3 = st.columns(3)
-                with col_stat1:
-                    st.metric("Coeficiente de Correlação", f"{correlacao:.3f}")
-                with col_stat2:
-                    if r_squared is not None:
-                        st.metric("Coeficiente de Determinação (R²)", f"{r_squared:.3f}")
-                with col_stat3:
-                    if slope is not None:
-                        st.metric("Inclinação da Reta", f"{slope:.3f}")
-                
-                # Interpretação detalhada
-                st.subheader("📝 Interpretação da Correlação")
-                
-                if abs(correlacao) > 0.7:
-                    st.success("**Correlação Forte**")
-                    st.write("• Relação muito significativa entre as variáveis")
-                    st.write("• Pode indicar causalidade ou forte dependência")
-                elif abs(correlacao) > 0.3:
-                    st.info("**Correlação Moderada**")
-                    st.write("• Relação moderadamente significativa")
-                    st.write("• Pode indicar tendência ou influência parcial")
-                else:
-                    st.warning("**Correlação Fraca**")
-                    st.write("• Relação fraca ou inexistente")
-                    st.write("• Variáveis praticamente independentes")
+            export_df = pd.DataFrame(dados_exportacao)
+            csv = export_df.to_csv(index=False, sep=';', decimal=',')
+            
+            st.download_button(
+                label="📥 Exportar para CSV",
+                data=csv,
+                file_name="resultados_torre_resfriamento.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_b3:
+            # Mostrar informações adicionais
+            taxa_evaporacao = (evaporacao / VZ_rec * 100) if VZ_rec > 0 else 0
+            taxa_reposicao = (reposicao / VZ_rec * 100) if VZ_rec > 0 else 0
+            
+            st.markdown(f'''
+            <div style="text-align: center; padding: 10px; background-color: #f8f9fa; border-radius: 8px;">
+                <div style="font-size: 14px; color: #666;">Taxa de Evaporação</div>
+                <div style="font-size: 18px; font-weight: bold; color: #4CAF50;">{formatar_numero(taxa_evaporacao, 2)}%</div>
+                <div style="font-size: 12px; color: #888;">da vazão de recirculação</div>
+            </div>
+            ''', unsafe_allow_html=True)
+        
+    except Exception as e:
+        st.error(f"Erro nos cálculos: {str(e)}")
 
-    # Download dos dados processados
-    st.sidebar.header("💾 Exportar Dados")
-    csv = dados_processados.to_csv(index=False)
-    st.sidebar.download_button(
-        label="📥 Baixar dados processados",
-        data=csv,
-        file_name="dados_processados.csv",
-        mime="text/csv"
-    )
+else:
+    # Tela inicial
+    st.markdown("## 📋 Instruções")
+    
+    st.markdown('<div class="instruction-box">', unsafe_allow_html=True)
+    st.markdown("""
+    **Para usar a calculadora:**
+    
+    1. **Preencha todos os parâmetros** na barra lateral
+    2. **Insira valores** para os 5 parâmetros químicos (Torre e Reposição)
+    3. **Selecione qual ciclo** de concentração usar nos cálculos
+    4. **Clique em 📠 CALCULAR** na barra lateral para visualizar o fluxo da torre
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown("### 🔬 Parâmetros Químicos Disponíveis")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.markdown('<div class="param-box"><div class="param-title">🔬 Sílica</div><div class="param-unit">ppm</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="param-box"><div class="param-title">🧪 Cloreto</div><div class="param-unit">ppm</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown('<div class="param-box"><div class="param-title">💎 Dureza Total</div><div class="param-unit">ppm CaCO₃</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown('<div class="param-box"><div class="param-title">⚗️ Alcalinidade Total</div><div class="param-unit">ppm CaCO₃</div></div>', unsafe_allow_html=True)
+    with col5:
+        st.markdown('<div class="param-box"><div class="param-title">🧲 Ferro Total</div><div class="param-unit">ppm</div></div>', unsafe_allow_html=True)
+    
+    st.info("⚡ **Clique no botão CALCULAR na barra lateral para visualizar o fluxo da torre**")
 
-if __name__ == "__main__":
-    main()
+# Rodapé
+st.markdown("<hr>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #666; padding: 10px; font-size: 14px;'>🏭 Calculadora de Torre de Resfriamento • Diagrama de Fluxo • Versão 2.0</div>", unsafe_allow_html=True)
