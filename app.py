@@ -414,12 +414,16 @@ with tabs[3]:
                                "p-valor": f"{p:.4f}",
                                "Conclusão": "Normal ✅" if p > alpha else "Não Normal ❌"})
 
-            # Anderson-Darling
-            result_ad = anderson(series)
-            ad_p = "< 0,01" if result_ad.statistic > result_ad.critical_values[-1] else "> 0,05"
-            resultados.append({"Teste": "Anderson-Darling", "Estatística": f"{result_ad.statistic:.4f}",
-                               "p-valor": ad_p,
-                               "Conclusão": "Normal ✅" if ">" in ad_p else "Não Normal ❌"})
+            # Anderson-Darling (requer N >= 8)
+            if len(series) >= 8:
+                try:
+                    result_ad = anderson(series)
+                    ad_p = "< 0,01" if result_ad.statistic > result_ad.critical_values[-1] else "> 0,05"
+                    resultados.append({"Teste": "Anderson-Darling", "Estatística": f"{result_ad.statistic:.4f}",
+                                       "p-valor": ad_p,
+                                       "Conclusão": "Normal ✅" if ">" in ad_p else "Não Normal ❌"})
+                except Exception:
+                    pass
 
             df_res = pd.DataFrame(resultados)
             st.dataframe(df_res, use_container_width=True, hide_index=True)
@@ -1097,81 +1101,193 @@ with tabs[11]:
     if not num_cols:
         st.warning("Nenhuma coluna numérica.")
     else:
+        # ── Gráfico de dispersão ──────────────────────
+        st.markdown("### 📊 Gráfico de Dispersão com Regressão")
         col1, col2 = st.columns(2)
+        cx = col1.selectbox("Eixo X", num_cols, key="sc_x")
+        cy = col2.selectbox("Eixo Y", num_cols, key="sc_y", index=min(1, len(num_cols)-1))
 
-        with col1:
-            st.markdown("### 📊 Gráfico de Dispersão com Regressão")
-            cx = st.selectbox("Eixo X", num_cols, key="sc_x")
-            cy = st.selectbox("Eixo Y", num_cols, key="sc_y", index=min(1, len(num_cols)-1))
+        df_sc = dados[[cx, cy]].dropna()
+        slope, intercept, r2, p, _ = regressao_linear(df_sc[cx].values.astype(float),
+                                                       df_sc[cy].values.astype(float))
+        fig_sc = px.scatter(df_sc, x=cx, y=cy, title=f"{cy} vs {cx}", opacity=0.7)
+        if slope is not None:
+            x_l = np.linspace(df_sc[cx].min(), df_sc[cx].max(), 200)
+            fig_sc.add_trace(go.Scatter(x=x_l, y=slope*x_l+intercept, mode='lines',
+                                        name='Regressão', line=dict(color='red', width=2)))
+            fig_sc.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper",
+                                  text=f"R² = {r2:.4f}", showarrow=False,
+                                  bgcolor="white", bordercolor="black")
+        st.plotly_chart(fig_sc, use_container_width=True)
 
-            df_sc = dados[[cx, cy]].dropna()
-            slope, intercept, r2, p, _ = regressao_linear(df_sc[cx].values.astype(float),
-                                                           df_sc[cy].values.astype(float))
-            fig_sc = px.scatter(df_sc, x=cx, y=cy, title=f"{cy} vs {cx}", opacity=0.7)
-            if slope is not None:
-                x_l = np.linspace(df_sc[cx].min(), df_sc[cx].max(), 200)
-                fig_sc.add_trace(go.Scatter(x=x_l, y=slope*x_l+intercept, mode='lines',
-                                            name='Regressão', line=dict(color='red', width=2)))
-                fig_sc.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper",
-                                      text=f"R² = {r2:.4f}", showarrow=False,
-                                      bgcolor="white", bordercolor="black")
-            st.plotly_chart(fig_sc, use_container_width=True)
+        st.markdown("---")
 
-        with col2:
-            st.markdown("### 🚨 Detecção de Outliers")
-            col_out2 = st.selectbox("Coluna", num_cols, key="out2_col")
-            metodo_out = st.selectbox("Método", ["IQR", "Z-Score", "Ambos"])
+        # ── Remoção iterativa de outliers ─────────────
+        st.markdown("### 🚨 Detecção e Remoção Iterativa de Outliers")
+        st.info("A remoção é iterativa: a cada rodada os limites IQR são recalculados sobre os dados restantes, até não restar nenhum outlier ou você parar manualmente.")
 
-            series_out = dados[col_out2].dropna()
-            out_iqr, lb, ub = detectar_outliers_iqr(series_out)
-            out_z = detectar_outliers_zscore(series_out)
+        col_out2 = st.selectbox("Coluna para análise", num_cols, key="out2_col")
+        metodo_out = st.selectbox("Método de detecção", ["IQR", "Z-Score"], key="out2_met")
 
-            if metodo_out == "IQR":
-                outliers_show = out_iqr
-                label = "IQR"
-            elif metodo_out == "Z-Score":
-                outliers_show = out_z
-                label = "Z-Score"
+        # Inicializar estado da sessão para remoção iterativa
+        chave_dados = f"dados_iter_{col_out2}"
+        chave_hist  = f"hist_iter_{col_out2}"
+        chave_rodada = f"rodada_{col_out2}"
+
+        if chave_dados not in st.session_state:
+            st.session_state[chave_dados] = dados[col_out2].dropna().copy()
+            st.session_state[chave_hist]  = []
+            st.session_state[chave_rodada] = 0
+
+        # Botão de reset — reinicia se trocar de coluna ou quiser recomeçar
+        col_r1, col_r2, col_r3 = st.columns(3)
+
+        with col_r1:
+            if st.button("🔄 Reiniciar (dados originais)", key="out_reset"):
+                st.session_state[chave_dados] = dados[col_out2].dropna().copy()
+                st.session_state[chave_hist]  = []
+                st.session_state[chave_rodada] = 0
+                st.rerun()
+
+        serie_atual = st.session_state[chave_dados]
+
+        # Detectar outliers na série atual
+        if metodo_out == "IQR":
+            outliers_atual, lb_atual, ub_atual = detectar_outliers_iqr(serie_atual)
+            label_met = "IQR"
+        else:
+            outliers_atual = detectar_outliers_zscore(serie_atual)
+            Q1, Q3 = serie_atual.quantile(0.25), serie_atual.quantile(0.75)
+            lb_atual, ub_atual = Q1 - 1.5*(Q3-Q1), Q3 + 1.5*(Q3-Q1)
+            label_met = "Z-Score (|z|>3)"
+
+        rodada_atual = st.session_state[chave_rodada]
+        n_orig = len(dados[col_out2].dropna())
+        n_atual = len(serie_atual)
+        n_out   = len(outliers_atual)
+
+        # Métricas do estado atual
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("N original", n_orig)
+        m2.metric("N atual", n_atual)
+        m3.metric(f"Outliers detectados ({label_met})", n_out)
+        m4.metric("Rodadas executadas", rodada_atual)
+
+        with col_r2:
+            if n_out > 0:
+                if st.button(f"▶️ Remover {n_out} outlier(s) — Rodada {rodada_atual + 1}", key="out_step"):
+                    idx_remover = outliers_atual.index
+                    nova_serie = serie_atual.drop(idx_remover)
+                    st.session_state[chave_hist].append({
+                        "Rodada": rodada_atual + 1,
+                        "Removidos": n_out,
+                        "N antes": n_atual,
+                        "N depois": len(nova_serie),
+                        "Limite Inf.": round(lb_atual, 4),
+                        "Limite Sup.": round(ub_atual, 4),
+                    })
+                    st.session_state[chave_dados] = nova_serie
+                    st.session_state[chave_rodada] = rodada_atual + 1
+                    st.rerun()
             else:
-                idx_both = out_iqr.index.intersection(out_z.index)
-                outliers_show = series_out[idx_both]
-                label = "IQR ∩ Z-Score"
+                st.success("✅ Nenhum outlier detectado — série limpa!")
 
-            c1m, c2m, c3m = st.columns(3)
-            c1m.metric("Total", len(series_out))
-            c2m.metric(f"Outliers ({label})", len(outliers_show))
-            c3m.metric("% Outliers", f"{len(outliers_show)/len(series_out)*100:.1f}%")
+        with col_r3:
+            if n_out > 0:
+                if st.button("⏩ Remover TODOS (automático)", key="out_all"):
+                    serie_temp = serie_atual.copy()
+                    rodadas_auto = 0
+                    while True:
+                        if metodo_out == "IQR":
+                            out_temp, lb_t, ub_t = detectar_outliers_iqr(serie_temp)
+                        else:
+                            out_temp = detectar_outliers_zscore(serie_temp)
+                            Q1t, Q3t = serie_temp.quantile(0.25), serie_temp.quantile(0.75)
+                            lb_t, ub_t = Q1t - 1.5*(Q3t-Q1t), Q3t + 1.5*(Q3t-Q1t)
 
-            # Boxplot com outliers destacados
-            fig_box = go.Figure()
-            fig_box.add_trace(go.Box(y=series_out, name="Distribuição", boxmean=True,
-                                     marker_color="#1f77b4"))
-            if len(outliers_show) > 0:
-                fig_box.add_trace(go.Scatter(
-                    x=["Distribuição"] * len(outliers_show),
-                    y=outliers_show.values, mode='markers',
-                    marker=dict(color='red', size=8, symbol='x'),
-                    name=f'Outliers ({label})'
-                ))
-            fig_box.update_layout(title=f"Outliers: {col_out2}")
-            st.plotly_chart(fig_box, use_container_width=True)
+                        if len(out_temp) == 0:
+                            break
 
-            if len(outliers_show) > 0:
-                with st.expander(f"📋 Ver {len(outliers_show)} outliers"):
-                    st.dataframe(pd.DataFrame({"Índice": outliers_show.index,
-                                               "Valor": outliers_show.values}),
-                                 hide_index=True)
+                        n_antes = len(serie_temp)
+                        serie_temp = serie_temp.drop(out_temp.index)
+                        rodadas_auto += 1
+                        st.session_state[chave_hist].append({
+                            "Rodada": st.session_state[chave_rodada] + rodadas_auto,
+                            "Removidos": len(out_temp),
+                            "N antes": n_antes,
+                            "N depois": len(serie_temp),
+                            "Limite Inf.": round(lb_t, 4),
+                            "Limite Sup.": round(ub_t, 4),
+                        })
 
-        # Mapa de calor de outliers
-        st.markdown("### 🗺️ Mapa de Outliers por Coluna")
+                    st.session_state[chave_dados] = serie_temp
+                    st.session_state[chave_rodada] += rodadas_auto
+                    st.rerun()
+
+        # Histograma: original vs atual
+        st.markdown("#### 📊 Distribuição: Original vs Após Remoção")
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Histogram(
+            x=dados[col_out2].dropna(), name="Original",
+            opacity=0.5, marker_color="#1f77b4", nbinsx=40
+        ))
+        fig_comp.add_trace(go.Histogram(
+            x=serie_atual, name=f"Após {rodada_atual} rodada(s)",
+            opacity=0.6, marker_color="#2ca02c", nbinsx=40
+        ))
+        fig_comp.update_layout(barmode='overlay',
+                               title=f"Comparação: {col_out2}",
+                               xaxis_title=col_out2, yaxis_title="Frequência")
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        # Boxplot atual com outliers marcados
+        fig_box = go.Figure()
+        fig_box.add_trace(go.Box(y=serie_atual, name="Série atual", boxmean=True,
+                                 marker_color="#2ca02c"))
+        if n_out > 0:
+            fig_box.add_trace(go.Scatter(
+                x=["Série atual"] * n_out,
+                y=outliers_atual.values, mode='markers',
+                marker=dict(color='red', size=9, symbol='x'),
+                name=f'Outliers a remover ({label_met})'
+            ))
+        fig_box.update_layout(title=f"Boxplot atual — {col_out2}")
+        st.plotly_chart(fig_box, use_container_width=True)
+
+        # Histórico de remoções
+        if st.session_state[chave_hist]:
+            st.markdown("#### 📋 Histórico de Remoções")
+            df_hist = pd.DataFrame(st.session_state[chave_hist])
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+            total_removidos = n_orig - n_atual
+            st.markdown(f"**Total removido:** {total_removidos} registros "
+                        f"({total_removidos/n_orig*100:.1f}% do original) "
+                        f"em {rodada_atual} rodada(s).")
+
+        # Exportar série limpa
+        if rodada_atual > 0:
+            csv_limpo = serie_atual.reset_index(drop=True).to_csv(index=False, header=[col_out2])
+            st.download_button("📥 Baixar série limpa (CSV)", csv_limpo,
+                               f"{col_out2}_sem_outliers.csv", "text/csv")
+
+        st.markdown("---")
+
+        # ── Mapa de outliers por coluna ───────────────
+        st.markdown("### 🗺️ Mapa de Outliers por Coluna (dados atuais)")
         out_summary = {}
         for c in num_cols:
             s = dados[c].dropna()
-            out, _, _ = detectar_outliers_iqr(s)
-            out_summary[c] = {"Outliers (IQR)": len(out),
-                              "% Outliers": round(len(out)/len(s)*100, 2) if len(s) > 0 else 0,
-                              "Limite Inf.": round(_, 4) if _ is not None else None,
-                              "Limite Sup.": round(__, 4) if (__ := detectar_outliers_iqr(s)[2]) is not None else None}
+            if len(s) == 0:
+                continue
+            out_c, lb_c, ub_c = detectar_outliers_iqr(s)
+            out_summary[c] = {
+                "N": len(s),
+                "Outliers (IQR)": len(out_c),
+                "% Outliers": round(len(out_c)/len(s)*100, 2),
+                "Limite Inf.": round(lb_c, 4),
+                "Limite Sup.": round(ub_c, 4),
+            }
         st.dataframe(pd.DataFrame(out_summary).T, use_container_width=True)
 
 # ══════════════════════════════════════════════
